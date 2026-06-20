@@ -1,0 +1,21 @@
+{
+  "schema_version": "agent-status/v1alpha1",
+  "agent_id": "assistant-8711",
+  "agent_name": "assistant",
+  "runtime": {
+    "lifecycle": "running",
+    "updated_at": "2026-06-20T16:45:00Z",
+    "workspace": "/srv/agents/assistant"
+  },
+  "task": {
+    "id": "task-7",
+    "context_id": "ctx-7",
+    "state": "submitted",
+    "summary": "wait for scheduler slot",
+    "status_timestamp": "2026-06-20T16:45:00Z"
+  },
+  "a2a": {
+    "agent_card_url": "http://127.0.0.1:8711/.well-known/agent-card.json",
+    "service_url": "http://127.0.0.1:8711/a2a"
+  }
+}

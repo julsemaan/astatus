@@ -1,0 +1,12 @@
+{
+  "$schema": "https://www.jetify.com/devbox.schema.json",
+  "packages": ["python@3.10"],
+  "env": {
+    "VENV_DIR": ".venv"
+  },
+  "shell": {
+    "init_hook": [
+      "if [ -f \"$VENV_DIR/bin/activate\" ]; then . \"$VENV_DIR/bin/activate\"; fi"
+    ]
+  }
+}

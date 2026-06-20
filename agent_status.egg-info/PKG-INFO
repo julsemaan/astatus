@@ -1,0 +1,192 @@
+Metadata-Version: 2.4
+Name: agent-status
+Version: 0.1.0
+Summary: Local agent status reference implementation
+Author: astatus contributors
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+
+# agent-status
+
+`agent-status` is generic local agent status standard plus tiny stdlib-only reference CLI. It gives cheap local visibility into live agent runtime and optional current task state.
+
+## Why local status layer exists
+
+Remote protocols answer remote questions. Local operators still need fast answer to: what agents run here, what are they doing, and is snapshot stale.
+
+## Relation to A2A
+
+This project is A2A-compatible local status layer. It complements A2A. It does not replace Agent Card discovery, Task APIs, or full A2A service behavior.
+
+See:
+- `docs/agent-status-v1alpha1.md`
+- `docs/a2a-compat.md`
+
+## Install
+
+Python 3.10+.
+
+Manual setup:
+
+```bash
+python3 -m venv .venv
+. .venv/bin/activate
+pip install -e .
+```
+
+Devbox alternative:
+
+```bash
+devbox shell
+python -m pip install -e .
+```
+
+Devbox uses same `.venv` path via `VENV_DIR=.venv`.
+
+## Quick start
+
+Emit one snapshot:
+
+```bash
+python3 -m agent_status emit \
+  --agent-id pi-12345 \
+  --agent-name pi \
+  --lifecycle running \
+  --workspace "$PWD" \
+  --pid $$ \
+  --task-id task-123 \
+  --task-state working \
+  --task-summary "refactor scheduler tests" \
+  --task-status-timestamp 2026-06-20T16:44:55Z
+```
+
+List snapshots:
+
+```bash
+python3 -m agent_status list
+```
+
+Get one snapshot:
+
+```bash
+python3 -m agent_status get pi-12345
+```
+
+Watch snapshots:
+
+```bash
+python3 -m agent_status watch --interval 2
+```
+
+Validate file:
+
+```bash
+python3 -m agent_status validate examples/sample-status.json
+```
+
+## Protocol summary
+
+Default status dir:
+
+```text
+${AGENT_STATUS_DIR:-${XDG_STATE_HOME:-~/.local/state}/agent-status}
+```
+
+One running agent instance = one file:
+
+```text
+<agent_id>.json
+```
+
+Core required fields:
+- `schema_version`
+- `agent_id`
+- `agent_name`
+- `runtime.lifecycle`
+- `runtime.updated_at`
+
+Task state uses A2A-style values. `idle`, `stale`, and `missing` are reader-derived only.
+
+## JSON example
+
+```json
+{
+  "schema_version": "agent-status/v1alpha1",
+  "agent_id": "pi-12345",
+  "agent_name": "pi",
+  "runtime": {
+    "lifecycle": "running",
+    "updated_at": "2026-06-20T16:45:00Z",
+    "last_activity_at": "2026-06-20T16:44:52Z",
+    "pid": 12345,
+    "workspace": "/home/julien/src/project"
+  },
+  "task": {
+    "id": "task-123",
+    "context_id": "ctx-456",
+    "state": "working",
+    "summary": "refactor scheduler tests",
+    "status_timestamp": "2026-06-20T16:44:55Z"
+  }
+}
+```
+
+## CLI examples
+
+Entry point after install:
+
+```bash
+agent-status emit --agent-id pi-1 --agent-name pi --lifecycle running
+agent-status list
+agent-status get pi-1
+agent-status watch
+agent-status validate examples/sample-status.json
+```
+
+## Writer rules
+
+- atomic whole-file write
+- absolute workspace path when known
+- update on lifecycle, task, summary, heartbeat
+- heartbeat every 15 to 30 seconds
+- on clean exit: remove file or persist `runtime.lifecycle=stopped`
+
+## Stale semantics
+
+Default `stale_after` is 60 seconds.
+
+Reader marks record stale when:
+
+```text
+now - runtime.updated_at > stale_after
+```
+
+If `runtime.lifecycle=running` and no `task`, reader may render `idle`.
+
+## Validation
+
+Run tests:
+
+```bash
+python3 -m unittest
+```
+
+Validate examples:
+
+```bash
+python3 -m agent_status validate examples/sample-status.json
+python3 -m agent_status validate examples/a2a-linked-status.json
+```
+
+## Roadmap
+
+Maybe later:
+- HTTP exporter
+- registry bridge
+- richer TUI or shell integrations
+
+Not current scope:
+- registry server
+- full A2A server
+- orchestration layer
+- history store

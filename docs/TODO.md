@@ -1,0 +1,1 @@
+- Issue with stale entries in the status directory. How to properly deal with this at the standard layer. See what A2A potentially does for this.

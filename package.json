@@ -1,0 +1,13 @@
+{
+  "name": "agent-status",
+  "version": "0.1.0",
+  "description": "agent-status standard plus pi extension emitter",
+  "keywords": ["pi-package", "pi", "extension", "agent-status"],
+  "type": "module",
+  "scripts": {
+    "test": "node --test pi-extension/test/*.test.js"
+  },
+  "pi": {
+    "extensions": ["./pi-extension/index.js"]
+  }
+}

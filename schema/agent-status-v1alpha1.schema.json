@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/schema/agent-status-v1alpha1.schema.json",
+  "title": "agent-status/v1alpha1",
+  "type": "object",
+  "required": ["schema_version", "agent_id", "agent_name", "runtime"],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "agent-status/v1alpha1"
+    },
+    "agent_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "agent_name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "runtime": {
+      "type": "object",
+      "required": ["lifecycle", "updated_at"],
+      "properties": {
+        "lifecycle": {
+          "type": "string",
+          "enum": ["running", "stopped", "unknown"]
+        },
+        "updated_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "last_activity_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "pid": {
+          "type": "integer"
+        },
+        "workspace": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "task": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "context_id": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "submitted",
+            "working",
+            "input-required",
+            "auth-required",
+            "completed",
+            "canceled",
+            "rejected",
+            "failed",
+            "unknown"
+          ]
+        },
+        "summary": {
+          "type": "string"
+        },
+        "status_timestamp": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "additionalProperties": true
+    },
+    "a2a": {
+      "type": "object",
+      "properties": {
+        "agent_card_url": {
+          "type": "string"
+        },
+        "service_url": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "x_meta": {
+      "type": "object"
+    }
+  },
+  "additionalProperties": true
+}

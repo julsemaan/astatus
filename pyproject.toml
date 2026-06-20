@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-status"
+version = "0.1.0"
+description = "Local agent status reference implementation"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "astatus contributors" }]
+dependencies = []
+
+[project.scripts]
+agent-status = "agent_status:main"

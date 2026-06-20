@@ -1,0 +1,22 @@
+{
+  "schema_version": "agent-status/v1alpha1",
+  "agent_id": "pi-7d5d6ca5e54c44cfb9e8d5acfd3c71a1",
+  "agent_name": "pi",
+  "runtime": {
+    "lifecycle": "running",
+    "updated_at": "2026-06-20T16:45:00Z",
+    "last_activity_at": "2026-06-20T16:44:52Z",
+    "pid": 12345,
+    "workspace": "/home/julien/src/project"
+  },
+  "task": {
+    "id": "task-123",
+    "context_id": "ctx-456",
+    "state": "working",
+    "summary": "refactor scheduler tests",
+    "status_timestamp": "2026-06-20T16:44:55Z"
+  },
+  "x_meta": {
+    "branch": "main"
+  }
+}
