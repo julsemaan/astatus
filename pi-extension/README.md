@@ -17,4 +17,7 @@ pi install /path/to/astatus
 pi install git:github.com/you/astatus
 ```
 
+Do not install `./pi-extension` path itself. That directory is dev-local test harness, not package root.
+After install in running pi session, run `/reload` or restart pi.
+
 Pi loads `./pi-extension/index.js` via root `package.json` `pi.extensions` manifest.

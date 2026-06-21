@@ -54,6 +54,9 @@ Install from local checkout:
 pi install /path/to/astatus
 ```
 
+Do not install `./pi-extension` directly. Repo root `package.json` exports extension.
+After install in running pi session, run `/reload` or restart pi so `session_start` fires for new extension.
+
 Install from git:
 
 ```bash

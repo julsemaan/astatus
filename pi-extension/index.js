@@ -5,6 +5,7 @@ import path from "node:path";
 
 export const SCHEMA_VERSION = "agent-status/v1alpha1";
 export const HEARTBEAT_INTERVAL_MS = 20_000;
+const EXTENSION_LOADED = Symbol.for("agent-status.pi-extension.loaded");
 
 export function nowUtc() {
   return new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
@@ -98,6 +99,9 @@ function expandHome(value, homeDir) {
 }
 
 export default function agentStatusPiExtension(pi) {
+  if (pi[EXTENSION_LOADED]) return;
+  pi[EXTENSION_LOADED] = true;
+
   const agentId = createSessionAgentId();
   const statusPath = buildStatusPath(agentId);
   let heartbeat = undefined;

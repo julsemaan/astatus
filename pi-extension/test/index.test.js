@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import {
+import agentStatusPiExtension, {
   SCHEMA_VERSION,
   buildBaseRecord,
   buildStatusPath,
@@ -98,4 +98,70 @@ test("helpers sanitize id and summarize prompt", () => {
   assert.equal(buildStatusPath("pi / 123", { AGENT_STATUS_DIR: "/tmp/x" }, "/home/me"), "/tmp/x/pi-123.json");
   assert.equal(summarizePrompt("  hello\nworld  "), "hello world");
   assert.match(summarizePrompt("x".repeat(200)), /^x+…$/);
+});
+
+test("extension session_start writes uuid-based status file", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "agent-status-ext-"));
+  const previous = process.env.AGENT_STATUS_DIR;
+  process.env.AGENT_STATUS_DIR = tmp;
+
+  const handlers = new Map();
+  const pi = {
+    on(event, handler) {
+      handlers.set(event, handler);
+    },
+  };
+
+  try {
+    agentStatusPiExtension(pi);
+    await handlers.get("session_start")?.({ reason: "startup" }, { cwd: "/work/tree" });
+    await handlers.get("session_shutdown")?.({ reason: "quit" }, {});
+
+    const files = fs.readdirSync(tmp);
+    assert.equal(files.length, 1);
+    assert.match(files[0], /^pi-[0-9a-f-]+\.json$/);
+    assert.notEqual(files[0], `pi-${process.pid}.json`);
+
+    const record = JSON.parse(fs.readFileSync(path.join(tmp, files[0]), "utf8"));
+    assert.match(record.agent_id, /^pi-[0-9a-f-]+$/);
+    assert.equal(record.runtime.workspace, path.resolve("/work/tree"));
+    assert.equal(record.runtime.lifecycle, "stopped");
+  } finally {
+    if (previous === undefined) delete process.env.AGENT_STATUS_DIR;
+    else process.env.AGENT_STATUS_DIR = previous;
+  }
+});
+
+test("extension ignores duplicate load on same pi instance", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "agent-status-ext-"));
+  const previous = process.env.AGENT_STATUS_DIR;
+  process.env.AGENT_STATUS_DIR = tmp;
+
+  const handlers = new Map();
+  const pi = {
+    on(event, handler) {
+      const list = handlers.get(event) || [];
+      list.push(handler);
+      handlers.set(event, list);
+    },
+  };
+
+  try {
+    agentStatusPiExtension(pi);
+    agentStatusPiExtension(pi);
+
+    for (const list of handlers.values()) assert.equal(list.length, 1);
+
+    await handlers.get("session_start")?.[0]?.({ reason: "startup" }, { cwd: "/work/tree" });
+    await handlers.get("session_shutdown")?.[0]?.({ reason: "quit" }, {});
+
+    const files = fs.readdirSync(tmp);
+    assert.equal(files.length, 1);
+
+    const record = JSON.parse(fs.readFileSync(path.join(tmp, files[0]), "utf8"));
+    assert.equal(record.runtime.lifecycle, "stopped");
+  } finally {
+    if (previous === undefined) delete process.env.AGENT_STATUS_DIR;
+    else process.env.AGENT_STATUS_DIR = previous;
+  }
 });
