@@ -6,6 +6,7 @@ import path from "node:path";
 export const SCHEMA_VERSION = "agent-status/v1alpha1";
 export const HEARTBEAT_INTERVAL_MS = 20_000;
 const EXTENSION_LOADED = Symbol.for("agent-status.pi-extension.loaded");
+const ACTIVE_SESSIONS = Symbol.for("agent-status.pi-extension.active-sessions");
 
 export function nowUtc() {
   return new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
@@ -91,6 +92,19 @@ export function writeStatusFile(filePath, record) {
   fs.renameSync(tempPath, filePath);
 }
 
+export function getSessionKey(ctx = {}) {
+  const sessionFile = ctx.sessionManager?.getSessionFile?.();
+  if (sessionFile) return `session-file:${String(sessionFile)}`;
+
+  const cwd = ctx.cwd ? path.resolve(ctx.cwd) : process.cwd();
+  return `pid:${process.pid}:cwd:${cwd}`;
+}
+
+function getActiveSessions() {
+  if (!globalThis[ACTIVE_SESSIONS]) globalThis[ACTIVE_SESSIONS] = new Map();
+  return globalThis[ACTIVE_SESSIONS];
+}
+
 function expandHome(value, homeDir) {
   if (!value.startsWith("~")) return value;
   if (value === "~") return homeDir;
@@ -102,22 +116,30 @@ export default function agentStatusPiExtension(pi) {
   if (pi[EXTENSION_LOADED]) return;
   pi[EXTENSION_LOADED] = true;
 
+  const ownerId = crypto.randomUUID();
   const agentId = createSessionAgentId();
   const statusPath = buildStatusPath(agentId);
   let heartbeat = undefined;
+  let activeSessionKey = undefined;
+  let enabled = false;
   let current = buildBaseRecord({ agentId });
 
-  const flush = () => writeStatusFile(statusPath, current);
+  const flush = () => {
+    if (!enabled) return;
+    writeStatusFile(statusPath, current);
+  };
   const touch = (patch = {}) => {
+    if (!enabled) return;
     current = updateRuntime(current, patch);
     flush();
   };
   const setTask = (task) => {
+    if (!enabled) return;
     current = withTask(updateRuntime(current, { last_activity_at: nowUtc() }), task);
     flush();
   };
   const startHeartbeat = () => {
-    if (heartbeat) return;
+    if (!enabled || heartbeat) return;
     heartbeat = setInterval(() => {
       current = updateRuntime(current);
       flush();
@@ -129,8 +151,22 @@ export default function agentStatusPiExtension(pi) {
     clearInterval(heartbeat);
     heartbeat = undefined;
   };
+  const releaseSession = () => {
+    if (!activeSessionKey) return;
+    const activeSessions = getActiveSessions();
+    if (activeSessions.get(activeSessionKey) === ownerId) activeSessions.delete(activeSessionKey);
+    activeSessionKey = undefined;
+    enabled = false;
+  };
 
   pi.on("session_start", async (_event, ctx) => {
+    const sessionKey = getSessionKey(ctx);
+    const activeSessions = getActiveSessions();
+    if (activeSessions.has(sessionKey)) return;
+
+    activeSessions.set(sessionKey, ownerId);
+    activeSessionKey = sessionKey;
+    enabled = true;
     current = buildBaseRecord({
       agentId,
       workspace: ctx.cwd,
@@ -160,13 +196,15 @@ export default function agentStatusPiExtension(pi) {
   });
 
   pi.on("agent_end", async () => {
+    if (!enabled) return;
     current = withTask(updateRuntime(current), undefined);
     flush();
   });
 
   pi.on("session_shutdown", async () => {
+    if (!enabled) return;
     stopHeartbeat();
-    current = withTask(updateRuntime(current, { lifecycle: "stopped" }), undefined);
-    flush();
+    fs.rmSync(statusPath, { force: true });
+    releaseSession();
   });
 }

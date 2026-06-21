@@ -10,6 +10,7 @@ import agentStatusPiExtension, {
   buildStatusPath,
   buildTempPath,
   createSessionAgentId,
+  getSessionKey,
   getStatusDir,
   nowUtc,
   sanitizeAgentId,
@@ -100,6 +101,14 @@ test("helpers sanitize id and summarize prompt", () => {
   assert.match(summarizePrompt("x".repeat(200)), /^x+…$/);
 });
 
+test("getSessionKey prefers session file", () => {
+  assert.equal(
+    getSessionKey({ cwd: "/work/tree", sessionManager: { getSessionFile: () => "/tmp/session.jsonl" } }),
+    "session-file:/tmp/session.jsonl",
+  );
+  assert.equal(getSessionKey({ cwd: "/work/tree" }), `pid:${process.pid}:cwd:${path.resolve("/work/tree")}`);
+});
+
 test("extension session_start writes uuid-based status file", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "agent-status-ext-"));
   const previous = process.env.AGENT_STATUS_DIR;
@@ -115,7 +124,6 @@ test("extension session_start writes uuid-based status file", async () => {
   try {
     agentStatusPiExtension(pi);
     await handlers.get("session_start")?.({ reason: "startup" }, { cwd: "/work/tree" });
-    await handlers.get("session_shutdown")?.({ reason: "quit" }, {});
 
     const files = fs.readdirSync(tmp);
     assert.equal(files.length, 1);
@@ -125,7 +133,9 @@ test("extension session_start writes uuid-based status file", async () => {
     const record = JSON.parse(fs.readFileSync(path.join(tmp, files[0]), "utf8"));
     assert.match(record.agent_id, /^pi-[0-9a-f-]+$/);
     assert.equal(record.runtime.workspace, path.resolve("/work/tree"));
-    assert.equal(record.runtime.lifecycle, "stopped");
+
+    await handlers.get("session_shutdown")?.({ reason: "quit" }, {});
+    assert.deepEqual(fs.readdirSync(tmp), []);
   } finally {
     if (previous === undefined) delete process.env.AGENT_STATUS_DIR;
     else process.env.AGENT_STATUS_DIR = previous;
@@ -155,11 +165,41 @@ test("extension ignores duplicate load on same pi instance", async () => {
     await handlers.get("session_start")?.[0]?.({ reason: "startup" }, { cwd: "/work/tree" });
     await handlers.get("session_shutdown")?.[0]?.({ reason: "quit" }, {});
 
-    const files = fs.readdirSync(tmp);
-    assert.equal(files.length, 1);
+    assert.deepEqual(fs.readdirSync(tmp), []);
+  } finally {
+    if (previous === undefined) delete process.env.AGENT_STATUS_DIR;
+    else process.env.AGENT_STATUS_DIR = previous;
+  }
+});
 
-    const record = JSON.parse(fs.readFileSync(path.join(tmp, files[0]), "utf8"));
-    assert.equal(record.runtime.lifecycle, "stopped");
+test("extension ignores duplicate session across separate pi wrappers", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "agent-status-ext-"));
+  const previous = process.env.AGENT_STATUS_DIR;
+  process.env.AGENT_STATUS_DIR = tmp;
+
+  const handlersA = new Map();
+  const handlersB = new Map();
+  const piA = { on(event, handler) { handlersA.set(event, handler); } };
+  const piB = { on(event, handler) { handlersB.set(event, handler); } };
+  const ctx = {
+    cwd: "/work/tree",
+    sessionManager: { getSessionFile: () => "/tmp/shared-session.jsonl" },
+  };
+
+  try {
+    agentStatusPiExtension(piA);
+    agentStatusPiExtension(piB);
+
+    await handlersA.get("session_start")?.({ reason: "startup" }, ctx);
+    await handlersB.get("session_start")?.({ reason: "startup" }, ctx);
+
+    const filesAfterStart = fs.readdirSync(tmp);
+    assert.equal(filesAfterStart.length, 1);
+
+    await handlersA.get("session_shutdown")?.({ reason: "quit" }, ctx);
+    await handlersB.get("session_shutdown")?.({ reason: "quit" }, ctx);
+
+    assert.deepEqual(fs.readdirSync(tmp), []);
   } finally {
     if (previous === undefined) delete process.env.AGENT_STATUS_DIR;
     else process.env.AGENT_STATUS_DIR = previous;
