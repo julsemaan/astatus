@@ -69,6 +69,15 @@ A typical pairing looks like this:
 3. If an `a2a` block exists, the reader can link out to the Agent Card or A2A service.
 4. If no `a2a` block exists, the local status is still valid and useful.
 
+## Stale entry note
+
+A2A does not define workstation-local file retention or stale-file cleanup semantics. Its task model covers task progress and terminal states, not local heartbeat tombstones in `${XDG_STATE_HOME}`.
+
+The local status layer therefore owns this policy:
+- `stale` remains a reader-derived condition.
+- Readers should not automatically delete stale snapshots when they encounter them.
+- An explicit prune policy handles older stale snapshots and older `stopped` snapshots.
+
 ## Bottom line
 
 `agent-status/v1alpha1` provides lightweight local observability. A2A still owns remote discovery and task interaction. The two standards work well together because they answer different questions.

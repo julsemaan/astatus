@@ -187,6 +187,7 @@ Reference reader behavior:
 9. Tools that rewrite existing payloads SHOULD preserve unknown fields.
 10. Unknown task states from future versions SHOULD render as `unknown` instead of crashing.
 11. Readers MUST support both shutdown patterns: removed file and persisted `stopped` snapshot.
+12. Readers SHOULD NOT silently delete stale snapshots during normal reads. Retention cleanup is a separate policy.
 
 ## Stale semantics
 
@@ -200,6 +201,14 @@ A reader MAY derive:
 These values MUST NOT be written into `task.state` or `runtime.lifecycle` to represent derived read-side conditions.
 
 `missing` usually means an expected file is absent. The exact policy is left to the reader.
+
+Stale entry handling rule:
+- A stale snapshot remains readable evidence; it is not automatically treated as garbage.
+- Readers mark a snapshot as stale before any cleanup is considered.
+- Cleanup, if desired, should be an explicit prune policy based on retention age.
+- The reference default retention policy prunes snapshots older than 24 hours when they are already stale, along with older `stopped` snapshots.
+
+Reason: automatic deletion in the read path can race with slow or suspended agents and removes useful debugging signal.
 
 ## Forward compatibility
 

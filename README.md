@@ -109,6 +109,12 @@ Watch snapshots:
 python3 -m agent_status watch --interval 2
 ```
 
+Prune old stale or stopped snapshots:
+
+```bash
+python3 -m agent_status prune --prune-after 86400
+```
+
 Validate a file:
 
 ```bash
@@ -175,6 +181,7 @@ PY
 agent-status list
 agent-status get <agent-id>
 agent-status watch
+agent-status prune --prune-after 86400
 agent-status validate examples/sample-status.json
 ```
 
@@ -199,6 +206,16 @@ now - runtime.updated_at > stale_after
 ```
 
 If `runtime.lifecycle=running` and there is no `task`, a reader may render the agent as `idle`.
+
+A stale file is not definitive proof that the writer is gone permanently. The agent may be crashed, suspended, disconnected, or simply slow. Readers should mark records as stale rather than deleting them silently. Cleanup is a separate operator policy.
+
+The reference CLI provides explicit cleanup:
+
+```bash
+agent-status prune --prune-after 86400
+```
+
+The default prune policy removes snapshots older than 24 hours if they are already stale, along with older snapshots whose `runtime.lifecycle` is `stopped`.
 
 ## Validation
 

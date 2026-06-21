@@ -270,6 +270,47 @@ def load_status_dir(status_dir: Path, warnings: list[str] | None = None) -> list
     return records
 
 
+def should_prune_record(
+    record: dict[str, Any],
+    now: dt.datetime | None = None,
+    stale_after: int = DEFAULT_STALE_AFTER,
+    prune_after: int = 24 * 60 * 60,
+    include_stopped: bool = True,
+) -> bool:
+    now = now or dt.datetime.now(dt.timezone.utc)
+    runtime = record["runtime"]
+    updated_at = parse_timestamp(runtime["updated_at"])
+    age_seconds = (now - updated_at).total_seconds()
+    if age_seconds <= prune_after:
+        return False
+    if include_stopped and runtime.get("lifecycle") == "stopped":
+        return True
+    return derive_state(record, now=now, stale_after=stale_after) == "stale"
+
+
+def prune_status_dir(
+    status_dir: Path,
+    now: dt.datetime | None = None,
+    stale_after: int = DEFAULT_STALE_AFTER,
+    prune_after: int = 24 * 60 * 60,
+    include_stopped: bool = True,
+) -> list[Path]:
+    removed: list[Path] = []
+    for record in load_status_dir(status_dir):
+        if not should_prune_record(
+            record,
+            now=now,
+            stale_after=stale_after,
+            prune_after=prune_after,
+            include_stopped=include_stopped,
+        ):
+            continue
+        path = Path(record["_path"])
+        path.unlink(missing_ok=True)
+        removed.append(path)
+    return removed
+
+
 def print_list(records: list[dict[str, Any]], stale_after: int = DEFAULT_STALE_AFTER) -> None:
     rows = [["AGENT_ID", "NAME", "LIFECYCLE", "STATE", "UPDATED_AT", "WORKSPACE"]]
     now = dt.datetime.now(dt.timezone.utc)
@@ -352,6 +393,19 @@ def cmd_validate(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_prune(args: argparse.Namespace) -> int:
+    status_dir = Path(args.status_dir).expanduser()
+    removed = prune_status_dir(
+        status_dir,
+        stale_after=args.stale_after,
+        prune_after=args.prune_after,
+        include_stopped=not args.keep_stopped,
+    )
+    for path in removed:
+        print(path)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="agent-status", description="Local agent status reference CLI")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -394,6 +448,13 @@ def build_parser() -> argparse.ArgumentParser:
     validate = subparsers.add_parser("validate", help="Validate status file")
     validate.add_argument("file")
     validate.set_defaults(func=cmd_validate)
+
+    prune = subparsers.add_parser("prune", help="Remove old stale or stopped snapshots")
+    prune.add_argument("--status-dir", default=str(default_status_dir()))
+    prune.add_argument("--stale-after", type=int, default=DEFAULT_STALE_AFTER)
+    prune.add_argument("--prune-after", type=int, default=24 * 60 * 60)
+    prune.add_argument("--keep-stopped", action="store_true")
+    prune.set_defaults(func=cmd_prune)
 
     return parser
 

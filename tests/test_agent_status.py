@@ -172,6 +172,52 @@ class AgentStatusTests(unittest.TestCase):
             self.assertEqual(len(warnings), 1)
             self.assertIn("ignored invalid JSON", warnings[0])
 
+    def test_prune_removes_old_stale_and_stopped_records(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            status_dir = Path(tmp)
+            stale_path = status_dir / "stale.json"
+            stopped_path = status_dir / "stopped.json"
+            fresh_path = status_dir / "fresh.json"
+            agent_status.atomic_write_json(
+                stale_path,
+                {
+                    "schema_version": agent_status.SCHEMA_VERSION,
+                    "agent_id": "stale",
+                    "agent_name": "pi",
+                    "runtime": {"lifecycle": "running", "updated_at": "2026-06-18T16:45:00Z"},
+                },
+            )
+            agent_status.atomic_write_json(
+                stopped_path,
+                {
+                    "schema_version": agent_status.SCHEMA_VERSION,
+                    "agent_id": "stopped",
+                    "agent_name": "pi",
+                    "runtime": {"lifecycle": "stopped", "updated_at": "2026-06-18T16:45:00Z"},
+                },
+            )
+            agent_status.atomic_write_json(
+                fresh_path,
+                {
+                    "schema_version": agent_status.SCHEMA_VERSION,
+                    "agent_id": "fresh",
+                    "agent_name": "pi",
+                    "runtime": {"lifecycle": "running", "updated_at": "2026-06-20T16:44:45Z"},
+                },
+            )
+
+            removed = agent_status.prune_status_dir(
+                status_dir,
+                now=agent_status.parse_timestamp("2026-06-20T16:45:00Z"),
+                stale_after=60,
+                prune_after=3600,
+            )
+
+            self.assertEqual({path.name for path in removed}, {"stale.json", "stopped.json"})
+            self.assertFalse(stale_path.exists())
+            self.assertFalse(stopped_path.exists())
+            self.assertTrue(fresh_path.exists())
+
     def test_print_list_aligns_columns_without_tabs(self):
         record = {
             "schema_version": agent_status.SCHEMA_VERSION,
@@ -193,7 +239,7 @@ class AgentStatusTests(unittest.TestCase):
         self.assertEqual(header.index("STATE"), row.index("stale"))
         self.assertEqual(header.index("UPDATED_AT"), row.index("2000-06-20T16:45:00Z"))
 
-    def test_cli_get_and_validate(self):
+    def test_cli_get_validate_and_prune(self):
         with tempfile.TemporaryDirectory() as tmp:
             status_dir = Path(tmp)
             with contextlib.redirect_stdout(io.StringIO()):
@@ -224,6 +270,28 @@ class AgentStatusTests(unittest.TestCase):
             with contextlib.redirect_stdout(io.StringIO()):
                 exit_code = agent_status.main(["validate", str(file_path)])
             self.assertEqual(exit_code, 0)
+
+            agent_status.atomic_write_json(
+                file_path,
+                {
+                    "schema_version": agent_status.SCHEMA_VERSION,
+                    "agent_id": "pi-1",
+                    "agent_name": "pi",
+                    "runtime": {"lifecycle": "running", "updated_at": "2026-06-18T16:45:00Z"},
+                },
+            )
+            prune_buffer = io.StringIO()
+            with contextlib.redirect_stdout(prune_buffer):
+                exit_code = agent_status.main([
+                    "prune",
+                    "--status-dir",
+                    str(status_dir),
+                    "--prune-after",
+                    "3600",
+                ])
+            self.assertEqual(exit_code, 0)
+            self.assertIn("pi-1.json", prune_buffer.getvalue())
+            self.assertFalse(file_path.exists())
 
 
 if __name__ == "__main__":
