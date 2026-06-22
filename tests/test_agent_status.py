@@ -219,6 +219,10 @@ class AgentStatusTests(unittest.TestCase):
             self.assertTrue(fresh_path.exists())
 
     def test_print_list_aligns_columns_without_tabs(self):
+        try:
+            import rich  # noqa: F401
+        except ImportError:
+            self.skipTest("rich not installed")
         record = {
             "schema_version": agent_status.SCHEMA_VERSION,
             "agent_id": "pi-1",
@@ -226,18 +230,28 @@ class AgentStatusTests(unittest.TestCase):
             "runtime": {
                 "lifecycle": "running",
                 "updated_at": "2000-06-20T16:45:00Z",
+                "workspace": "/tmp/project",
+                "pid": 123,
             },
         }
         buffer = io.StringIO()
         with contextlib.redirect_stdout(buffer):
-            agent_status.print_list([record], stale_after=60)
+            agent_status.print_list([record], stale_after=60, color=False)
 
         output = buffer.getvalue()
         self.assertNotIn("\t", output)
 
-        header, row = output.splitlines()
-        self.assertEqual(header.index("STATE"), row.index("stale"))
-        self.assertEqual(header.index("UPDATED_AT"), row.index("2000-06-20T16:45:00Z"))
+        lines = output.splitlines()
+        # agent row should have the stale state
+        agent_lines = [l for l in lines if "stale" in l and "─" not in l[:4]]
+        self.assertEqual(len(agent_lines), 1, f"expected one agent row, got {lines}")
+        agent_row = agent_lines[0]
+        # sub-row should contain workspace, not in agent row
+        sub_lines = [l for l in lines if "/tmp/project" in l]
+        self.assertEqual(len(sub_lines), 1, f"expected one sub-row with workspace, got {lines}")
+        self.assertNotIn("/tmp/project", agent_row)
+        # sub-row should contain pid
+        self.assertIn("pid 123", sub_lines[0])
 
     def test_cli_get_validate_and_prune(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -292,6 +306,13 @@ class AgentStatusTests(unittest.TestCase):
             self.assertEqual(exit_code, 0)
             self.assertIn("pi-1.json", prune_buffer.getvalue())
             self.assertFalse(file_path.exists())
+
+    def test_human_age(self):
+        now = agent_status.parse_timestamp("2026-06-22T12:00:00Z")
+        self.assertEqual(agent_status._human_age("2026-06-22T11:59:50Z", now), "10s ago")
+        self.assertEqual(agent_status._human_age("2026-06-22T11:58:00Z", now), "2m ago")
+        self.assertEqual(agent_status._human_age("2026-06-22T10:00:00Z", now), "2h ago")
+        self.assertEqual(agent_status._human_age("2026-06-20T12:00:00Z", now), "2d ago")
 
 
 if __name__ == "__main__":

@@ -124,18 +124,37 @@ export default function agentStatusPiExtension(pi) {
   let enabled = false;
   let current = buildBaseRecord({ agentId });
 
+  // -- Composable task sources --
+  let coreTask = undefined;   // from before_agent_start prompt summary
+  let bridgeData = undefined; // from agent-status:profile event
+
   const flush = () => {
     if (!enabled) return;
-    writeStatusFile(statusPath, current);
+    // ponytail: compose final record from sources inline, no extra abstraction
+    let record = current;
+
+    // Task: bridge overrides core prompt-derived task
+    const finalTask = bridgeData?.task || coreTask;
+    record = withTask(record, finalTask || undefined);
+
+    // x_meta: from bridge only
+    if (bridgeData?.x_meta) {
+      record.x_meta = bridgeData.x_meta;
+    } else {
+      delete record.x_meta;
+    }
+
+    writeStatusFile(statusPath, record);
   };
   const touch = (patch = {}) => {
     if (!enabled) return;
     current = updateRuntime(current, patch);
     flush();
   };
-  const setTask = (task) => {
+  const setCoreTask = (task) => {
     if (!enabled) return;
-    current = withTask(updateRuntime(current, { last_activity_at: nowUtc() }), task);
+    coreTask = task;
+    current = updateRuntime(current, { last_activity_at: nowUtc() });
     flush();
   };
   const startHeartbeat = () => {
@@ -167,6 +186,8 @@ export default function agentStatusPiExtension(pi) {
     activeSessions.set(sessionKey, ownerId);
     activeSessionKey = sessionKey;
     enabled = true;
+    coreTask = undefined;
+    bridgeData = undefined;
     current = buildBaseRecord({
       agentId,
       workspace: ctx.cwd,
@@ -178,7 +199,7 @@ export default function agentStatusPiExtension(pi) {
 
   pi.on("before_agent_start", async (event, ctx) => {
     const summary = summarizePrompt(event.prompt);
-    setTask({
+    setCoreTask({
       state: "working",
       summary,
       status_timestamp: nowUtc(),
@@ -197,7 +218,8 @@ export default function agentStatusPiExtension(pi) {
 
   pi.on("agent_end", async () => {
     if (!enabled) return;
-    current = withTask(updateRuntime(current), undefined);
+    coreTask = undefined;
+    current = updateRuntime(current);
     flush();
   });
 
@@ -207,4 +229,15 @@ export default function agentStatusPiExtension(pi) {
     fs.rmSync(statusPath, { force: true });
     releaseSession();
   });
+
+  // -- Bridge composition event --
+  // profile-side bridge (agent-status-bridge.ts) emits this with structured
+  // task priority (input-required > working > submitted) and x_meta.pi.
+  if (pi.events) {
+    pi.events.on("agent-status:profile", (data) => {
+      if (!enabled) return;
+      bridgeData = data;
+      flush();
+    });
+  }
 }

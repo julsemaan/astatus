@@ -4,11 +4,21 @@ import argparse
 import datetime as dt
 import json
 import os
+import re
 import sys
 import tempfile
 import time
 from pathlib import Path
 from typing import Any
+
+try:
+    from rich.console import Console
+    from rich.table import Table
+    from rich import box
+except ImportError:
+    Console = None  # type: ignore[assignment]
+    Table = None  # type: ignore[assignment]
+    box = None  # type: ignore[assignment]
 
 SCHEMA_VERSION = "agent-status/v1alpha1"
 RUNTIME_LIFECYCLES = {"running", "stopped", "unknown"}
@@ -25,6 +35,51 @@ TASK_STATES = {
 }
 DEFAULT_STALE_AFTER = 60
 DEFAULT_WATCH_INTERVAL = 2.0
+
+# ---- display helpers ----
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+_ANSI: dict[str, str] = {
+    "r": "\033[0m",       "b": "\033[1m",       "d": "\033[2m",
+    "red": "\033[31m",    "green": "\033[32m",  "yellow": "\033[33m",
+    "blue": "\033[34m",   "magenta": "\033[35m","cyan": "\033[36m",
+    "white": "\033[37m",
+}
+
+
+def _s(text: str, *codes: str) -> str:
+    """Wrap text in ANSI codes. _s('hi','b','green') -> bold green 'hi'."""
+    return "".join(_ANSI[c] for c in codes) + text + _ANSI["r"]
+
+
+def _vlen(text: str) -> int:
+    """Visible length, stripping ANSI escapes."""
+    return len(_ANSI_RE.sub("", text))
+
+
+_ICON_LIFECYCLE = {"running": "▶", "stopped": "◼", "unknown": "?"}
+_ICON_STATE = {
+    "working": "●", "completed": "✓", "failed": "✗",
+    "idle": "~", "stale": "⏳", "input-required": "?", "auth-required": "🔑",
+    "submitted": "→", "canceled": "✗", "rejected": "✗", "unknown": "?",
+}
+_STATE_COLOR: dict[str, str] = {
+    "working": "green", "completed": "green",
+    "input-required": "yellow", "auth-required": "yellow", "submitted": "yellow",
+    "failed": "red", "rejected": "red", "stale": "red",
+    "idle": "d", "canceled": "d", "stopped": "d", "unknown": "d",
+}
+
+
+def _human_age(updated_at: str, now: dt.datetime) -> str:
+    delta = (now - parse_timestamp(updated_at)).total_seconds()
+    if delta < 60:
+        return f"{int(delta)}s ago"
+    if delta < 3600:
+        return f"{int(delta / 60)}m ago"
+    if delta < 86400:
+        return f"{int(delta / 3600)}h ago"
+    return f"{int(delta / 86400)}d ago"
 
 
 class ValidationError(Exception):
@@ -311,25 +366,72 @@ def prune_status_dir(
     return removed
 
 
-def print_list(records: list[dict[str, Any]], stale_after: int = DEFAULT_STALE_AFTER) -> None:
-    rows = [["AGENT_ID", "NAME", "LIFECYCLE", "STATE", "UPDATED_AT", "WORKSPACE"]]
+def print_list(
+    records: list[dict[str, Any]],
+    stale_after: int = DEFAULT_STALE_AFTER,
+    *,
+    color: bool = True,
+    live: bool = False,
+) -> None:
+    if Console is None:
+        raise ImportError("rich is required for display. Install with: pip install rich")
     now = dt.datetime.now(dt.timezone.utc)
-    for record in records:
-        runtime = record["runtime"]
-        rows.append(
-            [
-                record["agent_id"],
-                record["agent_name"],
-                runtime["lifecycle"],
-                derive_state(record, now=now, stale_after=stale_after),
-                runtime["updated_at"],
-                runtime.get("workspace", ""),
-            ]
+    console = Console(no_color=not color, highlight=False)
+
+    count_s = f"{len(records)} agent{'s' if len(records) != 1 else ''}"
+    subtitle = f"{count_s}  ·  0s ago" if live else count_s
+
+    table = Table(
+        title=f"AGENT STATUS — {subtitle}",
+        box=box.ROUNDED if color else box.ASCII,
+        expand=True,
+        title_style="bold white" if color else "",
+        border_style="cyan dim" if color else "",
+    )
+    table.add_column("AGENT ID", no_wrap=True)
+    table.add_column("NAME")
+    table.add_column("LIFECYCLE")
+    table.add_column("STATE")
+    table.add_column("AGE", no_wrap=True)
+    table.add_column("TASK")
+
+    for rec in records:
+        rt = rec["runtime"]
+        state = derive_state(rec, now=now, stale_after=stale_after)
+        age = _human_age(rt["updated_at"], now)
+        task_sum = rec.get("task", {}).get("summary", "─")
+
+        lc = f"{_ICON_LIFECYCLE.get(rt['lifecycle'], '?')} {rt['lifecycle']}"
+        st = f"{_ICON_STATE.get(state, '?')} {state}"
+
+        # sub-line: workspace + pid
+        parts = []
+        ws = rt.get("workspace")
+        if ws:
+            parts.append(ws)
+        pid = rt.get("pid")
+        if pid is not None:
+            parts.append(f"pid {pid}")
+        if parts:
+            detail = task_sum + "\n  " + "  ·  ".join(parts)
+        else:
+            detail = task_sum
+
+        clr = _STATE_COLOR.get(state, "")
+        # rich uses "dim" not "d"
+        rich_style = "dim" if clr == "d" else clr
+
+        table.add_row(
+            rec["agent_id"],
+            rec["agent_name"],
+            lc,
+            st,
+            age,
+            detail,
+            style=rich_style or None,
         )
 
-    widths = [max(len(row[index]) for row in rows) for index in range(len(rows[0]))]
-    for row in rows:
-        print("  ".join(cell.ljust(widths[index]) for index, cell in enumerate(row)))
+    console.print(table)
 
 
 def cmd_emit(args: argparse.Namespace) -> int:
@@ -350,7 +452,8 @@ def cmd_list(args: argparse.Namespace) -> int:
     records = load_status_dir(Path(args.status_dir).expanduser(), warnings=warnings)
     for warning in warnings:
         print(warning, file=sys.stderr)
-    print_list(records, stale_after=args.stale_after)
+    color = args.color if args.color is not None else hasattr(sys.stdout, "isatty") and sys.stdout.isatty()
+    print_list(records, stale_after=args.stale_after, color=color)
     return 0
 
 
@@ -370,12 +473,13 @@ def cmd_get(args: argparse.Namespace) -> int:
 
 def cmd_watch(args: argparse.Namespace) -> int:
     status_dir = Path(args.status_dir).expanduser()
+    color = args.color if args.color is not None else hasattr(sys.stdout, "isatty") and sys.stdout.isatty()
     try:
         while True:
             warnings: list[str] = []
             records = load_status_dir(status_dir, warnings=warnings)
             print("\x1b[2J\x1b[H", end="")
-            print_list(records, stale_after=args.stale_after)
+            print_list(records, stale_after=args.stale_after, color=color, live=True)
             for warning in warnings:
                 print(warning, file=sys.stderr)
             time.sleep(args.interval)
@@ -432,6 +536,7 @@ def build_parser() -> argparse.ArgumentParser:
     list_cmd = subparsers.add_parser("list", help="List status snapshots")
     list_cmd.add_argument("--status-dir", default=str(default_status_dir()))
     list_cmd.add_argument("--stale-after", type=int, default=DEFAULT_STALE_AFTER)
+    list_cmd.add_argument("--color", action=argparse.BooleanOptionalAction, default=None)
     list_cmd.set_defaults(func=cmd_list)
 
     get = subparsers.add_parser("get", help="Get one status snapshot")
@@ -443,6 +548,7 @@ def build_parser() -> argparse.ArgumentParser:
     watch.add_argument("--status-dir", default=str(default_status_dir()))
     watch.add_argument("--stale-after", type=int, default=DEFAULT_STALE_AFTER)
     watch.add_argument("--interval", type=float, default=DEFAULT_WATCH_INTERVAL)
+    watch.add_argument("--color", action=argparse.BooleanOptionalAction, default=None)
     watch.set_defaults(func=cmd_watch)
 
     validate = subparsers.add_parser("validate", help="Validate status file")

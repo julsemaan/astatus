@@ -5,18 +5,28 @@ Summary: Local agent status reference implementation
 Author: astatus contributors
 Requires-Python: >=3.10
 Description-Content-Type: text/markdown
+Requires-Dist: rich>=13
 
 # agent-status
 
-`agent-status` is generic local agent status standard plus tiny stdlib-only reference CLI. It gives cheap local visibility into live agent runtime and optional current task state.
+`agent-status` is a generic local agent status standard with a tiny, stdlib-only reference CLI. It provides a low-cost way to see which agents are running on a machine, what they are doing, and whether their latest status is still fresh.
 
-## Why local status layer exists
+## Why a local status layer exists
 
-Remote protocols answer remote questions. Local operators still need fast answer to: what agents run here, what are they doing, and is snapshot stale.
+Remote protocols answer remote questions. Local operators still need fast answers to a different set of questions: which agents are running here, what are they doing, and is the latest snapshot stale?
+
+Why this needs its own standard:
+- A2A is designed for remote discovery and task interaction, not workstation-local runtime visibility.
+- Local operators need data that A2A does not model directly, such as process lifecycle, PID, workspace, and heartbeat freshness.
+- One file per agent instance enables simple tooling: shell scripts, CLIs, watchers, and validators can all read the same shape.
+- Shared writer and reader rules prevent ad hoc status files from drifting on filenames, fields, stale semantics, and shutdown behavior.
+- `${XDG_STATE_HOME:-~/.local/state}` is a good fit for persistent user state that is local to a machine.
 
 ## Relation to A2A
 
-This project is A2A-compatible local status layer. It complements A2A. It does not replace Agent Card discovery, Task APIs, or full A2A service behavior.
+This project is an A2A-compatible local status layer. It complements A2A rather than replacing it. It does not replace Agent Card discovery, Task APIs, or full A2A service behavior.
+
+A2A answers, "How do agents talk to each other?" This repository answers, "What is running on this machine right now?"
 
 See:
 - `docs/agent-status-v1alpha1.md`
@@ -43,13 +53,44 @@ python -m pip install -e .
 
 Devbox uses same `.venv` path via `VENV_DIR=.venv`.
 
+### Pi extension install
+
+Pi package lives in `pi-extension/`, exported from repo root `package.json` like `ponytail`.
+
+Install from local checkout:
+
+```bash
+pi install /path/to/astatus
+```
+
+Do not install `./pi-extension` directly. Repo root `package.json` exports extension.
+After install in running pi session, run `/reload` or restart pi so `session_start` fires for new extension.
+
+Install from git:
+
+```bash
+pi install git:github.com/you/astatus
+```
+
+One-shot test without install:
+
+```bash
+pi -e ./pi-extension/index.js
+```
+
 ## Quick start
 
 Emit one snapshot:
 
 ```bash
+RUN_ID="pi-$(python3 - <<'PY'
+import uuid
+print(uuid.uuid4().hex)
+PY
+)"
+
 python3 -m agent_status emit \
-  --agent-id pi-12345 \
+  --agent-id "$RUN_ID" \
   --agent-name pi \
   --lifecycle running \
   --workspace "$PWD" \
@@ -60,6 +101,8 @@ python3 -m agent_status emit \
   --task-status-timestamp 2026-06-20T16:44:55Z
 ```
 
+`agent_id` must be unique per running agent instance. Do not derive it from PID alone: sandboxed sessions can share same PID and collide. `runtime.pid` is descriptive metadata only.
+
 List snapshots:
 
 ```bash
@@ -69,7 +112,7 @@ python3 -m agent_status list
 Get one snapshot:
 
 ```bash
-python3 -m agent_status get pi-12345
+python3 -m agent_status get "$RUN_ID"
 ```
 
 Watch snapshots:
@@ -78,7 +121,13 @@ Watch snapshots:
 python3 -m agent_status watch --interval 2
 ```
 
-Validate file:
+Prune old stale or stopped snapshots:
+
+```bash
+python3 -m agent_status prune --prune-after 86400
+```
+
+Validate a file:
 
 ```bash
 python3 -m agent_status validate examples/sample-status.json
@@ -86,13 +135,13 @@ python3 -m agent_status validate examples/sample-status.json
 
 ## Protocol summary
 
-Default status dir:
+Default status directory:
 
 ```text
 ${AGENT_STATUS_DIR:-${XDG_STATE_HOME:-~/.local/state}/agent-status}
 ```
 
-One running agent instance = one file:
+One running agent instance maps to one file:
 
 ```text
 <agent_id>.json
@@ -105,14 +154,14 @@ Core required fields:
 - `runtime.lifecycle`
 - `runtime.updated_at`
 
-Task state uses A2A-style values. `idle`, `stale`, and `missing` are reader-derived only.
+Task state uses A2A-style values. `idle`, `stale`, and `missing` are derived by readers and are never written directly.
 
 ## JSON example
 
 ```json
 {
   "schema_version": "agent-status/v1alpha1",
-  "agent_id": "pi-12345",
+  "agent_id": "pi-7d5d6ca5e54c44cfb9e8d5acfd3c71a1",
   "agent_name": "pi",
   "runtime": {
     "lifecycle": "running",
@@ -133,35 +182,52 @@ Task state uses A2A-style values. `idle`, `stale`, and `missing` are reader-deri
 
 ## CLI examples
 
-Entry point after install:
+After installation, you can also use the entry point directly:
 
 ```bash
-agent-status emit --agent-id pi-1 --agent-name pi --lifecycle running
+agent-status emit --agent-id "pi-$(python3 - <<'PY'
+import uuid
+print(uuid.uuid4().hex)
+PY
+)" --agent-name pi --lifecycle running
 agent-status list
-agent-status get pi-1
+agent-status get <agent-id>
 agent-status watch
+agent-status prune --prune-after 86400
 agent-status validate examples/sample-status.json
 ```
 
 ## Writer rules
 
-- atomic whole-file write
-- absolute workspace path when known
-- update on lifecycle, task, summary, heartbeat
-- heartbeat every 15 to 30 seconds
-- on clean exit: remove file or persist `runtime.lifecycle=stopped`
+- Write the whole file atomically.
+- `agent_id` must be unique per running instance. PID-only IDs like `pi-12345` are unsafe under PID namespaces or sandboxes.
+- Use an absolute workspace path when it is known.
+- Update on lifecycle changes, task changes, summary changes, and heartbeats.
+- Send a heartbeat every 15 to 30 seconds.
+- On clean exit, either remove the file or persist `runtime.lifecycle=stopped`.
+- If you use temp files for atomic writes, temp names need random or OS-guaranteed uniqueness. Do not rely on PID suffixes.
 
 ## Stale semantics
 
-Default `stale_after` is 60 seconds.
+The default `stale_after` value is 60 seconds.
 
-Reader marks record stale when:
+A reader marks a record as stale when:
 
 ```text
 now - runtime.updated_at > stale_after
 ```
 
-If `runtime.lifecycle=running` and no `task`, reader may render `idle`.
+If `runtime.lifecycle=running` and there is no `task`, a reader may render the agent as `idle`.
+
+A stale file is not definitive proof that the writer is gone permanently. The agent may be crashed, suspended, disconnected, or simply slow. Readers should mark records as stale rather than deleting them silently. Cleanup is a separate operator policy.
+
+The reference CLI provides explicit cleanup:
+
+```bash
+agent-status prune --prune-after 86400
+```
+
+The default prune policy removes snapshots older than 24 hours if they are already stale, along with older snapshots whose `runtime.lifecycle` is `stopped`.
 
 ## Validation
 
@@ -180,12 +246,12 @@ python3 -m agent_status validate examples/a2a-linked-status.json
 
 ## Roadmap
 
-Maybe later:
+Possible future additions:
 - HTTP exporter
 - registry bridge
 - richer TUI or shell integrations
 
-Not current scope:
+Out of scope for now:
 - registry server
 - full A2A server
 - orchestration layer

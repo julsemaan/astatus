@@ -9,7 +9,7 @@ description = "Local agent status reference implementation"
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [{ name = "astatus contributors" }]
-dependencies = []
+dependencies = ["rich>=13"]
 
 [project.scripts]
 agent-status = "agent_status:main"
