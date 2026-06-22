@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { complete } from "@earendil-works/pi-ai";
+import { completeSimple } from "@earendil-works/pi-ai";
 
 export const SCHEMA_VERSION = "agent-status/v1alpha1";
 export const HEARTBEAT_INTERVAL_MS = 20_000;
@@ -119,7 +119,7 @@ async function llmSummarize(prompt, ctx) {
     const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);
     if (!auth?.ok || !auth.apiKey) return undefined;
 
-    const response = await complete(
+    const response = await completeSimple(
       ctx.model,
       {
         messages: [{
