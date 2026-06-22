@@ -160,6 +160,7 @@ export default function agentStatusPiExtension(pi) {
 
   // -- Composable task sources --
   let coreTask = undefined;   // from before_agent_start prompt summary
+  let stickyTask = undefined; // retained prompt-derived task for idle session state
   let bridgeData = undefined; // from agent-status:profile event
   let llmSummaryText = undefined; // cached LLM summary, avoid re-summarizing each step
 
@@ -168,8 +169,8 @@ export default function agentStatusPiExtension(pi) {
     // ponytail: compose final record from sources inline, no extra abstraction
     let record = current;
 
-    // Task: bridge overrides core prompt-derived task
-    const finalTask = bridgeData?.task || coreTask;
+    // Task priority: bridge > active prompt task > retained idle task
+    const finalTask = bridgeData?.task || coreTask || stickyTask;
     record = withTask(record, finalTask || undefined);
 
     // x_meta: from bridge only
@@ -216,12 +217,14 @@ export default function agentStatusPiExtension(pi) {
   pi.on("session_start", async (_event, ctx) => {
     const sessionKey = getSessionKey(ctx);
     const activeSessions = getActiveSessions();
+    if (activeSessionKey && activeSessionKey !== sessionKey) releaseSession();
     if (activeSessions.has(sessionKey)) return;
 
     activeSessions.set(sessionKey, ownerId);
     activeSessionKey = sessionKey;
     enabled = true;
     coreTask = undefined;
+    stickyTask = undefined;
     bridgeData = undefined;
     llmSummaryText = undefined;
     current = buildBaseRecord({
@@ -243,6 +246,7 @@ export default function agentStatusPiExtension(pi) {
       // ponytail: use session file as cheap context id until pi exposes stable task ids here.
       ...(ctx.sessionManager?.getSessionFile?.() ? { context_id: String(ctx.sessionManager.getSessionFile()) } : {}),
     };
+    stickyTask = structuredClone(task);
     setCoreTask(task);
 
     // Background: LLM summarization once per session, skip if already done
@@ -250,7 +254,9 @@ export default function agentStatusPiExtension(pi) {
       llmSummarize(event.prompt, ctx).then(llmSummary => {
         if (llmSummary && llmSummary !== fallbackSummary) {
           llmSummaryText = llmSummary;
-          setCoreTask({ ...task, summary: llmSummary, status_timestamp: nowUtc() });
+          const nextTask = { ...task, summary: llmSummary, status_timestamp: nowUtc() };
+          stickyTask = structuredClone(nextTask);
+          setCoreTask(nextTask);
         }
       });
     }
@@ -267,6 +273,13 @@ export default function agentStatusPiExtension(pi) {
   pi.on("agent_end", async () => {
     if (!enabled) return;
     coreTask = undefined;
+    if (stickyTask) {
+      stickyTask = {
+        ...stickyTask,
+        state: "submitted",
+        status_timestamp: nowUtc(),
+      };
+    }
     current = updateRuntime(current);
     flush();
   });

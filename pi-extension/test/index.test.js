@@ -205,3 +205,63 @@ test("extension ignores duplicate session across separate pi wrappers", async ()
     else process.env.AGENT_STATUS_DIR = previous;
   }
 });
+
+test("extension session_start switches session ownership and clears retained task", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "agent-status-ext-"));
+  const previous = process.env.AGENT_STATUS_DIR;
+  process.env.AGENT_STATUS_DIR = tmp;
+
+  const handlers = new Map();
+  const listeners = new Map();
+  const pi = {
+    on(event, handler) {
+      handlers.set(event, handler);
+    },
+    events: {
+      on(event, handler) {
+        const list = listeners.get(event) || [];
+        list.push(handler);
+        listeners.set(event, list);
+      },
+      emit(event, data) {
+        for (const handler of listeners.get(event) || []) handler(data);
+      },
+    },
+  };
+
+  try {
+    agentStatusPiExtension(pi);
+
+    const firstCtx = {
+      cwd: "/work/first",
+      sessionManager: { getSessionFile: () => "/tmp/first-session.jsonl" },
+    };
+    const secondCtx = {
+      cwd: "/work/second",
+      sessionManager: { getSessionFile: () => "/tmp/second-session.jsonl" },
+    };
+
+    await handlers.get("session_start")?.({ reason: "startup" }, firstCtx);
+    await handlers.get("before_agent_start")?.({ prompt: "Retained from first session" }, firstCtx);
+    await handlers.get("agent_end")?.({}, firstCtx);
+
+    let files = fs.readdirSync(tmp);
+    assert.equal(files.length, 1);
+    let record = JSON.parse(fs.readFileSync(path.join(tmp, files[0]), "utf8"));
+    assert.equal(record.task.state, "submitted");
+
+    await handlers.get("session_start")?.({ reason: "switch" }, secondCtx);
+
+    files = fs.readdirSync(tmp);
+    assert.equal(files.length, 1);
+    record = JSON.parse(fs.readFileSync(path.join(tmp, files[0]), "utf8"));
+    assert.equal(record.runtime.workspace, path.resolve("/work/second"));
+    assert.equal("task" in record, false);
+
+    await handlers.get("session_shutdown")?.({ reason: "quit" }, secondCtx);
+    assert.deepEqual(fs.readdirSync(tmp), []);
+  } finally {
+    if (previous === undefined) delete process.env.AGENT_STATUS_DIR;
+    else process.env.AGENT_STATUS_DIR = previous;
+  }
+});

@@ -1,1 +1,4 @@
-- No open items currently.
+- Inspect repo for inconsistencies. Whether that is for the standard itself based on how the pi-extension/ has been implemented or all of the documentation
+- CI workflows
+- Release process
+- Tooling improvements (ex: the Makefile today is very basic)
