@@ -69,6 +69,24 @@ One-shot test without install:
 pi -e ./pi-extension/index.js
 ```
 
+## Build
+
+Build a wheel and source distribution:
+
+```bash
+python -m pip install build
+python -m build
+```
+
+Install from built wheel in a fresh environment:
+
+```bash
+python -m venv /tmp/astatus-smoke
+. /tmp/astatus-smoke/bin/activate
+pip install dist/agent_status-0.1.0-py3-none-any.whl
+agent-status --help
+```
+
 ## Quick start
 
 Emit one snapshot:

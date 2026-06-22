@@ -392,7 +392,7 @@ def print_list(
     table.add_column("NAME")
     table.add_column("LIFECYCLE")
     table.add_column("STATE")
-    table.add_column("AGE", no_wrap=True)
+    table.add_column("UPDATED", no_wrap=True)
     table.add_column("TASK")
 
     for rec in records:

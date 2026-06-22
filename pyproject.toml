@@ -2,6 +2,9 @@
 requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
+[tool.setuptools]
+py-modules = ["agent_status"]
+
 [project]
 name = "agent-status"
 version = "0.1.0"
