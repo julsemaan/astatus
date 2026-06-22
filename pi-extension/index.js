@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { complete } from "@earendil-works/pi-ai";
 
 export const SCHEMA_VERSION = "agent-status/v1alpha1";
 export const HEARTBEAT_INTERVAL_MS = 20_000;
@@ -112,6 +113,39 @@ function expandHome(value, homeDir) {
   return value;
 }
 
+async function llmSummarize(prompt, ctx) {
+  if (!prompt || !ctx.model) return undefined;
+  try {
+    const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);
+    if (!auth?.ok || !auth.apiKey) return undefined;
+
+    const response = await complete(
+      ctx.model,
+      {
+        messages: [{
+          role: "user",
+          content: [{ type: "text", text: `Summarize this task very concisely (5-10 words):\n\n${prompt}` }],
+          timestamp: Date.now(),
+        }],
+      },
+      { apiKey: auth.apiKey, headers: auth.headers },
+    );
+
+    const text = response.content
+      .filter(c => c.type === "text")
+      .map(c => c.text)
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    return text || undefined;
+  } catch (err) {
+    console.error("[agent-status] llmSummarize failed:", err);
+    ctx.ui?.notify("[agent-status] LLM summarization failed, using fallback", "warning");
+    return undefined;
+  }
+}
+
 export default function agentStatusPiExtension(pi) {
   if (pi[EXTENSION_LOADED]) return;
   pi[EXTENSION_LOADED] = true;
@@ -127,6 +161,7 @@ export default function agentStatusPiExtension(pi) {
   // -- Composable task sources --
   let coreTask = undefined;   // from before_agent_start prompt summary
   let bridgeData = undefined; // from agent-status:profile event
+  let llmSummaryText = undefined; // cached LLM summary, avoid re-summarizing each step
 
   const flush = () => {
     if (!enabled) return;
@@ -188,6 +223,7 @@ export default function agentStatusPiExtension(pi) {
     enabled = true;
     coreTask = undefined;
     bridgeData = undefined;
+    llmSummaryText = undefined;
     current = buildBaseRecord({
       agentId,
       workspace: ctx.cwd,
@@ -198,14 +234,26 @@ export default function agentStatusPiExtension(pi) {
   });
 
   pi.on("before_agent_start", async (event, ctx) => {
-    const summary = summarizePrompt(event.prompt);
-    setCoreTask({
+    // Set task immediately with cheap fallback for instant user feedback
+    const fallbackSummary = summarizePrompt(event.prompt);
+    const task = {
       state: "working",
-      summary,
+      summary: llmSummaryText || fallbackSummary,
       status_timestamp: nowUtc(),
       // ponytail: use session file as cheap context id until pi exposes stable task ids here.
       ...(ctx.sessionManager?.getSessionFile?.() ? { context_id: String(ctx.sessionManager.getSessionFile()) } : {}),
-    });
+    };
+    setCoreTask(task);
+
+    // Background: LLM summarization once per session, skip if already done
+    if (!llmSummaryText) {
+      llmSummarize(event.prompt, ctx).then(llmSummary => {
+        if (llmSummary && llmSummary !== fallbackSummary) {
+          llmSummaryText = llmSummary;
+          setCoreTask({ ...task, summary: llmSummary, status_timestamp: nowUtc() });
+        }
+      });
+    }
   });
 
   pi.on("tool_execution_start", async () => {
