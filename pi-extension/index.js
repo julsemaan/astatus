@@ -124,7 +124,7 @@ async function llmSummarize(prompt, ctx) {
       {
         messages: [{
           role: "user",
-          content: [{ type: "text", text: `Summarize this task very concisely (5-10 words):\n\n${prompt}` }],
+          content: [{ type: "text", text: `Summarize this task very concisely in a few words:\n\n${prompt}` }],
           timestamp: Date.now(),
         }],
       },
