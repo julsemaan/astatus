@@ -65,7 +65,7 @@ _ICON_STATE = {
 }
 _STATE_COLOR: dict[str, str] = {
     "working": "green", "completed": "green",
-    "input-required": "yellow", "auth-required": "yellow", "submitted": "yellow",
+    "input-required": "yellow", "auth-required": "yellow", "submitted": "cyan",
     "failed": "red", "rejected": "red", "stale": "red",
     "idle": "d", "canceled": "d", "stopped": "d", "unknown": "d",
 }
@@ -313,6 +313,17 @@ def derive_state(record: dict[str, Any], now: dt.datetime | None = None, stale_a
     return task.get("state") or runtime["lifecycle"]
 
 
+def display_sort_key(
+    record: dict[str, Any],
+    now: dt.datetime | None = None,
+    stale_after: int = DEFAULT_STALE_AFTER,
+) -> tuple[int, float]:
+    state = derive_state(record, now=now, stale_after=stale_after)
+    bucket = 1 if state in {"idle", "stale", "stopped", "unknown", "canceled"} else 0
+    updated_at = parse_timestamp(record["runtime"]["updated_at"])
+    return (bucket, -updated_at.timestamp())
+
+
 def load_status_dir(status_dir: Path, warnings: list[str] | None = None) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     if not status_dir.exists():
@@ -395,7 +406,7 @@ def print_list(
     table.add_column("UPDATED", no_wrap=True)
     table.add_column("TASK")
 
-    for rec in records:
+    for rec in sorted(records, key=lambda rec: display_sort_key(rec, now=now, stale_after=stale_after)):
         rt = rec["runtime"]
         state = derive_state(rec, now=now, stale_after=stale_after)
         age = _human_age(rt["updated_at"], now)

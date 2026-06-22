@@ -151,6 +151,39 @@ class AgentStatusTests(unittest.TestCase):
         }
         self.assertEqual(agent_status.validate_payload(payload), [])
 
+    def test_display_sort_key_buckets_and_recency(self):
+        now = agent_status.parse_timestamp("2026-06-20T16:50:00Z")
+        stale_after = 120
+
+        def record(agent_id, updated_at, lifecycle="running", task_state=None):
+            item = {
+                "schema_version": agent_status.SCHEMA_VERSION,
+                "agent_id": agent_id,
+                "agent_name": "pi",
+                "runtime": {"lifecycle": lifecycle, "updated_at": updated_at},
+            }
+            if task_state is not None:
+                item["task"] = {"state": task_state}
+            return item
+
+        records = [
+            record("idle-newer", "2026-06-20T16:49:00Z"),
+            record("working-older", "2026-06-20T16:48:00Z", task_state="working"),
+            record("working-newer", "2026-06-20T16:49:30Z", task_state="working"),
+            record("stopped", "2026-06-20T16:49:45Z", lifecycle="stopped"),
+            record("stale", "2026-06-20T16:47:30Z"),
+        ]
+
+        ordered = sorted(
+            records,
+            key=lambda rec: agent_status.display_sort_key(rec, now=now, stale_after=stale_after),
+        )
+
+        self.assertEqual(
+            [record["agent_id"] for record in ordered],
+            ["working-newer", "working-older", "stopped", "idle-newer", "stale"],
+        )
+
     def test_invalid_json_file_ignored_with_warning(self):
         with tempfile.TemporaryDirectory() as tmp:
             good = Path(tmp) / "good.json"
@@ -306,6 +339,11 @@ class AgentStatusTests(unittest.TestCase):
             self.assertEqual(exit_code, 0)
             self.assertIn("pi-1.json", prune_buffer.getvalue())
             self.assertFalse(file_path.exists())
+
+    def test_state_color_mapping(self):
+        self.assertEqual(agent_status._STATE_COLOR["input-required"], "yellow")
+        self.assertEqual(agent_status._STATE_COLOR["submitted"], "cyan")
+        self.assertNotEqual(agent_status._STATE_COLOR["input-required"], agent_status._STATE_COLOR["submitted"])
 
     def test_human_age(self):
         now = agent_status.parse_timestamp("2026-06-22T12:00:00Z")

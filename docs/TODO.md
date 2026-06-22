@@ -2,3 +2,4 @@
 - CI workflows
 - Release process
 - Tooling improvements (ex: the Makefile today is very basic)
+- When resuming a session, it should summarize the task using the initial prompt, not the most recent one
