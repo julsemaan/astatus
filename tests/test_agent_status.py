@@ -33,6 +33,11 @@ class AgentStatusTests(unittest.TestCase):
                 "pid": 123,
                 "workspace": "/tmp/project",
             },
+            "goal": {
+                "summary": "session intent",
+                "updated_at": "2026-06-20T16:44:50Z",
+                "source": "initial-prompt",
+            },
             "task": {
                 "id": "task-1",
                 "context_id": "ctx-1",
@@ -67,6 +72,17 @@ class AgentStatusTests(unittest.TestCase):
         }
         errors = agent_status.validate_payload(payload)
         self.assertTrue(any("invalid runtime.lifecycle" in error for error in errors))
+
+    def test_invalid_goal_timestamp_fails(self):
+        payload = {
+            "schema_version": agent_status.SCHEMA_VERSION,
+            "agent_id": "pi-1",
+            "agent_name": "pi",
+            "runtime": {"lifecycle": "running", "updated_at": "2026-06-20T16:45:00Z"},
+            "goal": {"summary": "intent", "updated_at": "bad", "source": "initial-prompt"},
+        }
+        errors = agent_status.validate_payload(payload)
+        self.assertTrue(any("goal.updated_at" in error for error in errors))
 
     def test_invalid_task_state_fails(self):
         payload = {
@@ -251,6 +267,33 @@ class AgentStatusTests(unittest.TestCase):
             self.assertFalse(stopped_path.exists())
             self.assertTrue(fresh_path.exists())
 
+    def test_print_list_shows_goal_when_task_missing(self):
+        try:
+            import rich  # noqa: F401
+        except ImportError:
+            self.skipTest("rich not installed")
+        record = {
+            "schema_version": agent_status.SCHEMA_VERSION,
+            "agent_id": "pi-1",
+            "agent_name": "pi",
+            "runtime": {
+                "lifecycle": "running",
+                "updated_at": "2999-06-20T16:45:00Z",
+            },
+            "goal": {
+                "summary": "durable session intent",
+                "updated_at": "2999-06-20T16:44:00Z",
+                "source": "initial-prompt",
+            },
+        }
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            agent_status.print_list([record], stale_after=60, color=False)
+
+        output = buffer.getvalue()
+        self.assertIn("durable session intent", output)
+        self.assertIn("idle", output)
+
     def test_print_list_aligns_columns_without_tabs(self):
         try:
             import rich  # noqa: F401
@@ -300,6 +343,12 @@ class AgentStatusTests(unittest.TestCase):
                     "pi",
                     "--lifecycle",
                     "running",
+                    "--goal-summary",
+                    "ship feature",
+                    "--goal-updated-at",
+                    "2026-06-20T16:44:50Z",
+                    "--goal-source",
+                    "initial-prompt",
                 ])
             self.assertEqual(exit_code, 0)
             buffer = io.StringIO()
@@ -313,6 +362,7 @@ class AgentStatusTests(unittest.TestCase):
             self.assertEqual(exit_code, 0)
             output = json.loads(buffer.getvalue())
             self.assertEqual(output["agent_id"], "pi-1")
+            self.assertEqual(output["goal"]["summary"], "ship feature")
             file_path = status_dir / "pi-1.json"
             with contextlib.redirect_stdout(io.StringIO()):
                 exit_code = agent_status.main(["validate", str(file_path)])

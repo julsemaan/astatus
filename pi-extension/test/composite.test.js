@@ -6,11 +6,6 @@ import path from "node:path";
 
 import agentStatusPiExtension from "../index.js";
 
-/**
- * Build a mock pi with both lifecycle `on` and extension `events`.
- * handlers: Map<eventName, handler> for lifecycle events
- * listeners: Map<eventName, handler[]> for extension-to-extension events
- */
 function createMockPi() {
   const lifecycleHandlers = new Map();
   const eventListeners = new Map();
@@ -27,44 +22,42 @@ function createMockPi() {
       },
       emit(event, data) {
         const list = eventListeners.get(event) || [];
-        // snapshot to avoid mutation during iteration
-        for (const handler of [...list]) {
-          handler(data);
-        }
+        for (const handler of [...list]) handler(data);
       },
     },
   };
 
-  return { pi, lifecycleHandlers, eventListeners };
+  return { pi, lifecycleHandlers };
 }
 
 function readStatusFile(dir) {
   const files = fs.readdirSync(dir);
   assert.equal(files.length, 1);
-  const rec = JSON.parse(fs.readFileSync(path.join(dir, files[0]), "utf8"));
-  return rec;
+  return JSON.parse(fs.readFileSync(path.join(dir, files[0]), "utf8"));
 }
 
-/**
- * Minimal sessionManager for reconstructing todo/goal/mode state.
- * Branch entries are reconstructed from message/custom entry arrays.
- */
-function sessionManager(entries = []) {
-  return {
-    getBranch() {
-      return entries;
-    },
-  };
+function deferred() {
+  let resolve;
+  const promise = new Promise((nextResolve) => {
+    resolve = nextResolve;
+  });
+  return { promise, resolve };
 }
 
-function testCtx(name) {
+function testCtx(name, extra = {}) {
   return {
     cwd: `/tmp/${name}`,
-    sessionManager: sessionManager([]),
+    sessionManager: { getSessionFile: () => `/tmp/${name}.jsonl` },
+    ...extra,
   };
 }
 
-test("composite: bridge event overrides prompt task", async () => {
+async function flushAsync() {
+  await new Promise(resolve => setImmediate(resolve));
+  await new Promise(resolve => setImmediate(resolve));
+}
+
+test("composite: first prompt sets goal and active task", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "astatus-comp-"));
   const prev = process.env.AGENT_STATUS_DIR;
   process.env.AGENT_STATUS_DIR = tmp;
@@ -72,38 +65,17 @@ test("composite: bridge event overrides prompt task", async () => {
   const { pi, lifecycleHandlers } = createMockPi();
   try {
     agentStatusPiExtension(pi);
+    const ctx = testCtx("first-prompt");
 
-    // Start session
-    const ctx = testCtx("bridge-override");
     await lifecycleHandlers.get("session_start")?.({ reason: "startup" }, ctx);
+    await lifecycleHandlers.get("before_agent_start")?.({ prompt: "Refactor scheduler tests" }, ctx);
 
-    // Before agent: sets core prompt task
-    await lifecycleHandlers.get("before_agent_start")?.(
-      { prompt: "Do the thing" },
-      ctx,
-    );
-
-    const recordAfterPrompt = readStatusFile(tmp);
-    assert.equal(recordAfterPrompt.task.state, "working");
-    assert.ok(recordAfterPrompt.task.summary?.includes("Do the thing"));
-
-    // Bridge emits override
-    pi.events.emit("agent-status:profile", {
-      task: { state: "input-required", summary: "Waiting for user input" },
-      x_meta: {
-        pi: {
-          mode: "build",
-          ponytail: "full",
-          todo: { open: 0, done: 0 },
-          goal: { active: false, status: "idle", text: "" },
-          subagent: { active: false },
-        },
-      },
-    });
-
-    const recordAfterBridge = readStatusFile(tmp);
-    assert.equal(recordAfterBridge.task.state, "input-required");
-    assert.equal(recordAfterBridge.task.summary, "Waiting for user input");
+    const record = readStatusFile(tmp);
+    assert.equal(record.goal.summary, "Refactor scheduler tests");
+    assert.equal(record.goal.source, "initial-prompt");
+    assert.equal(record.task.state, "working");
+    assert.equal(record.task.summary, "Refactor scheduler tests");
+    assert.equal(record.task.context_id, "/tmp/first-prompt.jsonl");
   } finally {
     if (prev === undefined) delete process.env.AGENT_STATUS_DIR;
     else process.env.AGENT_STATUS_DIR = prev;
@@ -111,7 +83,7 @@ test("composite: bridge event overrides prompt task", async () => {
   }
 });
 
-test("composite: question blocked → input-required survives agent_end", async () => {
+test("composite: second prompt updates task but keeps goal", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "astatus-comp-"));
   const prev = process.env.AGENT_STATUS_DIR;
   process.env.AGENT_STATUS_DIR = tmp;
@@ -119,29 +91,41 @@ test("composite: question blocked → input-required survives agent_end", async 
   const { pi, lifecycleHandlers } = createMockPi();
   try {
     agentStatusPiExtension(pi);
-    const ctx = testCtx("question-blocked");
+    const ctx = testCtx("second-prompt");
+
     await lifecycleHandlers.get("session_start")?.({ reason: "startup" }, ctx);
+    await lifecycleHandlers.get("before_agent_start")?.({ prompt: "First prompt becomes goal" }, ctx);
+    await lifecycleHandlers.get("agent_end")?.({}, ctx);
+    await lifecycleHandlers.get("before_agent_start")?.({ prompt: "Second prompt becomes task" }, ctx);
 
-    // Bridge says input-required (question blocked)
-    pi.events.emit("agent-status:profile", {
-      task: { state: "input-required", summary: "Waiting for user input" },
-      x_meta: {
-        pi: {
-          mode: "build",
-          ponytail: "full",
-          todo: { open: 0, done: 0 },
-          goal: { active: false, status: "idle", text: "" },
-          subagent: { active: false },
-        },
-      },
-    });
+    const record = readStatusFile(tmp);
+    assert.equal(record.goal.summary, "First prompt becomes goal");
+    assert.equal(record.task.summary, "Second prompt becomes task");
+    assert.equal(record.task.state, "working");
+  } finally {
+    if (prev === undefined) delete process.env.AGENT_STATUS_DIR;
+    else process.env.AGENT_STATUS_DIR = prev;
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
 
-    // Agent ends — core task cleared, but bridge task survives
+test("composite: agent_end clears task and keeps goal", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "astatus-comp-"));
+  const prev = process.env.AGENT_STATUS_DIR;
+  process.env.AGENT_STATUS_DIR = tmp;
+
+  const { pi, lifecycleHandlers } = createMockPi();
+  try {
+    agentStatusPiExtension(pi);
+    const ctx = testCtx("agent-end");
+
+    await lifecycleHandlers.get("session_start")?.({ reason: "startup" }, ctx);
+    await lifecycleHandlers.get("before_agent_start")?.({ prompt: "Keep goal only" }, ctx);
     await lifecycleHandlers.get("agent_end")?.({}, ctx);
 
     const record = readStatusFile(tmp);
-    assert.equal(record.task.state, "input-required");
-    assert.equal(record.x_meta.pi.mode, "build");
+    assert.equal(record.goal.summary, "Keep goal only");
+    assert.equal("task" in record, false);
   } finally {
     if (prev === undefined) delete process.env.AGENT_STATUS_DIR;
     else process.env.AGENT_STATUS_DIR = prev;
@@ -149,7 +133,7 @@ test("composite: question blocked → input-required survives agent_end", async 
   }
 });
 
-test("composite: open todo while idle → submitted", async () => {
+test("composite: idle heartbeat keeps goal without task", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "astatus-comp-"));
   const prev = process.env.AGENT_STATUS_DIR;
   process.env.AGENT_STATUS_DIR = tmp;
@@ -157,10 +141,35 @@ test("composite: open todo while idle → submitted", async () => {
   const { pi, lifecycleHandlers } = createMockPi();
   try {
     agentStatusPiExtension(pi);
-    const ctx = testCtx("open-todo-idle");
+    const ctx = testCtx("idle-heartbeat");
+
+    await lifecycleHandlers.get("session_start")?.({ reason: "startup" }, ctx);
+    await lifecycleHandlers.get("before_agent_start")?.({ prompt: "Persist goal through idle" }, ctx);
+    await lifecycleHandlers.get("agent_end")?.({}, ctx);
+    await lifecycleHandlers.get("tool_execution_start")?.({}, ctx);
+    await lifecycleHandlers.get("tool_execution_end")?.({}, ctx);
+
+    const record = readStatusFile(tmp);
+    assert.equal(record.goal.summary, "Persist goal through idle");
+    assert.equal("task" in record, false);
+  } finally {
+    if (prev === undefined) delete process.env.AGENT_STATUS_DIR;
+    else process.env.AGENT_STATUS_DIR = prev;
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("composite: bridge submitted still works for real queued work", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "astatus-comp-"));
+  const prev = process.env.AGENT_STATUS_DIR;
+  process.env.AGENT_STATUS_DIR = tmp;
+
+  const { pi, lifecycleHandlers } = createMockPi();
+  try {
+    agentStatusPiExtension(pi);
+    const ctx = testCtx("bridge-submitted");
     await lifecycleHandlers.get("session_start")?.({ reason: "startup" }, ctx);
 
-    // Bridge emits submitted (2 open todos, idle)
     pi.events.emit("agent-status:profile", {
       task: { state: "submitted", summary: "2 open todos pending" },
       x_meta: {
@@ -176,8 +185,8 @@ test("composite: open todo while idle → submitted", async () => {
 
     const record = readStatusFile(tmp);
     assert.equal(record.task.state, "submitted");
+    assert.equal(record.task.summary, "2 open todos pending");
     assert.equal(record.x_meta.pi.todo.open, 2);
-    assert.equal(record.x_meta.pi.todo.current, "Fix bug");
   } finally {
     if (prev === undefined) delete process.env.AGENT_STATUS_DIR;
     else process.env.AGENT_STATUS_DIR = prev;
@@ -185,41 +194,40 @@ test("composite: open todo while idle → submitted", async () => {
   }
 });
 
-test("composite: active goal → working overrides prompt summary", async () => {
+test("composite: stale async older prompt cannot overwrite newer task", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "astatus-comp-"));
   const prev = process.env.AGENT_STATUS_DIR;
   process.env.AGENT_STATUS_DIR = tmp;
 
   const { pi, lifecycleHandlers } = createMockPi();
+  const first = deferred();
+  const second = deferred();
+  const summaries = [first, second];
+  let callIndex = 0;
+
   try {
     agentStatusPiExtension(pi);
-    const ctx = testCtx("active-goal");
-    await lifecycleHandlers.get("session_start")?.({ reason: "startup" }, ctx);
-
-    // Before agent: sets core prompt task
-    await lifecycleHandlers.get("before_agent_start")?.(
-      { prompt: "Generic work" },
-      ctx,
-    );
-
-    // Bridge emits active goal (bridge priority > prompt)
-    pi.events.emit("agent-status:profile", {
-      task: { state: "working", summary: "Refactor auth module" },
-      x_meta: {
-        pi: {
-          mode: "build",
-          ponytail: "full",
-          todo: { open: 0, done: 3 },
-          goal: { active: true, status: "working", text: "Refactor auth module" },
-          subagent: { active: false },
-        },
-      },
+    const ctx = testCtx("stale-task-summary", {
+      agentStatusSummarize: async () => summaries[callIndex++].promise,
     });
 
-    const record = readStatusFile(tmp);
-    assert.equal(record.task.state, "working");
-    // bridge task shows goal text, not prompt summary
-    assert.equal(record.task.summary, "Refactor auth module");
+    await lifecycleHandlers.get("session_start")?.({ reason: "startup" }, ctx);
+    await lifecycleHandlers.get("before_agent_start")?.({ prompt: "First prompt" }, ctx);
+    await lifecycleHandlers.get("before_agent_start")?.({ prompt: "Second prompt" }, ctx);
+
+    second.resolve("Second better summary");
+    await flushAsync();
+
+    let record = readStatusFile(tmp);
+    assert.equal(record.goal.summary, "First prompt");
+    assert.equal(record.task.summary, "Second better summary");
+
+    first.resolve("First stale summary");
+    await flushAsync();
+
+    record = readStatusFile(tmp);
+    assert.equal(record.goal.summary, "First stale summary");
+    assert.equal(record.task.summary, "Second better summary");
   } finally {
     if (prev === undefined) delete process.env.AGENT_STATUS_DIR;
     else process.env.AGENT_STATUS_DIR = prev;
@@ -227,7 +235,7 @@ test("composite: active goal → working overrides prompt summary", async () => 
   }
 });
 
-test("composite: bridge without task falls back to core task", async () => {
+test("composite: bridge task overrides prompt task", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "astatus-comp-"));
   const prev = process.env.AGENT_STATUS_DIR;
   process.env.AGENT_STATUS_DIR = tmp;
@@ -235,17 +243,12 @@ test("composite: bridge without task falls back to core task", async () => {
   const { pi, lifecycleHandlers } = createMockPi();
   try {
     agentStatusPiExtension(pi);
-    const ctx = testCtx("no-bridge-task");
+    const ctx = testCtx("bridge-override");
     await lifecycleHandlers.get("session_start")?.({ reason: "startup" }, ctx);
+    await lifecycleHandlers.get("before_agent_start")?.({ prompt: "Do thing" }, ctx);
 
-    // Before agent: core prompt task
-    await lifecycleHandlers.get("before_agent_start")?.(
-      { prompt: "Core work" },
-      ctx,
-    );
-
-    // Bridge emits NO task, only meta
     pi.events.emit("agent-status:profile", {
+      task: { state: "input-required", summary: "Waiting for user input" },
       x_meta: {
         pi: {
           mode: "build",
@@ -258,10 +261,44 @@ test("composite: bridge without task falls back to core task", async () => {
     });
 
     const record = readStatusFile(tmp);
-    // Falls back to core prompt task
-    assert.equal(record.task.state, "working");
-    assert.ok(record.task.summary?.includes("Core work"));
-    // x_meta still applied
+    assert.equal(record.goal.summary, "Do thing");
+    assert.equal(record.task.state, "input-required");
+    assert.equal(record.task.summary, "Waiting for user input");
+  } finally {
+    if (prev === undefined) delete process.env.AGENT_STATUS_DIR;
+    else process.env.AGENT_STATUS_DIR = prev;
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("composite: question blocked survives agent_end via bridge", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "astatus-comp-"));
+  const prev = process.env.AGENT_STATUS_DIR;
+  process.env.AGENT_STATUS_DIR = tmp;
+
+  const { pi, lifecycleHandlers } = createMockPi();
+  try {
+    agentStatusPiExtension(pi);
+    const ctx = testCtx("question-blocked");
+    await lifecycleHandlers.get("session_start")?.({ reason: "startup" }, ctx);
+
+    pi.events.emit("agent-status:profile", {
+      task: { state: "input-required", summary: "Waiting for user input" },
+      x_meta: {
+        pi: {
+          mode: "build",
+          ponytail: "full",
+          todo: { open: 0, done: 0 },
+          goal: { active: false, status: "idle", text: "" },
+          subagent: { active: false },
+        },
+      },
+    });
+
+    await lifecycleHandlers.get("agent_end")?.({}, ctx);
+
+    const record = readStatusFile(tmp);
+    assert.equal(record.task.state, "input-required");
     assert.equal(record.x_meta.pi.mode, "build");
   } finally {
     if (prev === undefined) delete process.env.AGENT_STATUS_DIR;
@@ -270,7 +307,7 @@ test("composite: bridge without task falls back to core task", async () => {
   }
 });
 
-test("composite: agent_end clears core task but preserves bridge snapshot", async () => {
+test("composite: session_start resets goal and task", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "astatus-comp-"));
   const prev = process.env.AGENT_STATUS_DIR;
   process.env.AGENT_STATUS_DIR = tmp;
@@ -278,120 +315,21 @@ test("composite: agent_end clears core task but preserves bridge snapshot", asyn
   const { pi, lifecycleHandlers } = createMockPi();
   try {
     agentStatusPiExtension(pi);
-    const ctx = testCtx("agent-end-preserve");
-    await lifecycleHandlers.get("session_start")?.({ reason: "startup" }, ctx);
-
-    // Before agent: sets core task
-    await lifecycleHandlers.get("before_agent_start")?.(
-      { prompt: "Working on X" },
-      ctx,
-    );
-
-    // Bridge emits submitted (idle + open todos)
-    pi.events.emit("agent-status:profile", {
-      task: { state: "submitted", summary: "3 open todos pending" },
-      x_meta: {
-        pi: {
-          mode: "plan",
-          ponytail: "lite",
-          todo: { open: 3, done: 1 },
-          goal: { active: false, status: "idle", text: "" },
-          subagent: { active: false },
-        },
-      },
-    });
-
-    // Agent ends
-    await lifecycleHandlers.get("agent_end")?.({}, ctx);
-
-    const record = readStatusFile(tmp);
-    // Core task cleared, but bridge "submitted" survives
-    assert.equal(record.task.state, "submitted");
-    // meta survives
-    assert.equal(record.x_meta.pi.mode, "plan");
-    assert.equal(record.x_meta.pi.ponytail, "lite");
-  } finally {
-    if (prev === undefined) delete process.env.AGENT_STATUS_DIR;
-    else process.env.AGENT_STATUS_DIR = prev;
-    fs.rmSync(tmp, { recursive: true, force: true });
-  }
-});
-
-test("composite: prompt task survives agent_end as submitted", async () => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "astatus-comp-"));
-  const prev = process.env.AGENT_STATUS_DIR;
-  process.env.AGENT_STATUS_DIR = tmp;
-
-  const { pi, lifecycleHandlers } = createMockPi();
-  try {
-    agentStatusPiExtension(pi);
-    const ctx = testCtx("sticky-after-agent-end");
-    await lifecycleHandlers.get("session_start")?.({ reason: "startup" }, ctx);
-    await lifecycleHandlers.get("before_agent_start")?.({ prompt: "Keep this task alive" }, ctx);
-    await lifecycleHandlers.get("agent_end")?.({}, ctx);
-
-    const record = readStatusFile(tmp);
-    assert.equal(record.task.state, "submitted");
-    assert.ok(record.task.summary?.includes("Keep this task alive"));
-  } finally {
-    if (prev === undefined) delete process.env.AGENT_STATUS_DIR;
-    else process.env.AGENT_STATUS_DIR = prev;
-    fs.rmSync(tmp, { recursive: true, force: true });
-  }
-});
-
-test("composite: retained task survives idle heartbeat without bridge", async () => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "astatus-comp-"));
-  const prev = process.env.AGENT_STATUS_DIR;
-  process.env.AGENT_STATUS_DIR = tmp;
-
-  const { pi, lifecycleHandlers } = createMockPi();
-  try {
-    agentStatusPiExtension(pi);
-    const ctx = testCtx("sticky-heartbeat");
-    await lifecycleHandlers.get("session_start")?.({ reason: "startup" }, ctx);
-    await lifecycleHandlers.get("before_agent_start")?.({ prompt: "Idle but same session" }, ctx);
-    await lifecycleHandlers.get("agent_end")?.({}, ctx);
-    await lifecycleHandlers.get("tool_execution_start")?.({}, ctx);
-    await lifecycleHandlers.get("tool_execution_end")?.({}, ctx);
-
-    const record = readStatusFile(tmp);
-    assert.equal(record.task.state, "submitted");
-    assert.ok(record.task.summary?.includes("Idle but same session"));
-  } finally {
-    if (prev === undefined) delete process.env.AGENT_STATUS_DIR;
-    else process.env.AGENT_STATUS_DIR = prev;
-    fs.rmSync(tmp, { recursive: true, force: true });
-  }
-});
-
-test("composite: second session_start clears retained task", async () => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "astatus-comp-"));
-  const prev = process.env.AGENT_STATUS_DIR;
-  process.env.AGENT_STATUS_DIR = tmp;
-
-  const { pi, lifecycleHandlers } = createMockPi();
-  try {
-    agentStatusPiExtension(pi);
-    const firstCtx = {
-      cwd: "/tmp/first-session",
-      sessionManager: { getSessionFile: () => "/tmp/first-session.jsonl" },
-    };
-    const secondCtx = {
-      cwd: "/tmp/second-session",
-      sessionManager: { getSessionFile: () => "/tmp/second-session.jsonl" },
-    };
+    const firstCtx = testCtx("first-session");
+    const secondCtx = testCtx("second-session");
 
     await lifecycleHandlers.get("session_start")?.({ reason: "startup" }, firstCtx);
-    await lifecycleHandlers.get("before_agent_start")?.({ prompt: "Old session task" }, firstCtx);
+    await lifecycleHandlers.get("before_agent_start")?.({ prompt: "Old session goal" }, firstCtx);
     await lifecycleHandlers.get("agent_end")?.({}, firstCtx);
 
     let record = readStatusFile(tmp);
-    assert.equal(record.task.state, "submitted");
+    assert.equal(record.goal.summary, "Old session goal");
+    assert.equal("task" in record, false);
 
     await lifecycleHandlers.get("session_start")?.({ reason: "switch" }, secondCtx);
 
     record = readStatusFile(tmp);
+    assert.equal("goal" in record, false);
     assert.equal("task" in record, false);
     assert.equal(record.runtime.workspace, path.resolve("/tmp/second-session"));
   } finally {
@@ -401,89 +339,7 @@ test("composite: second session_start clears retained task", async () => {
   }
 });
 
-test("composite: bridge task still overrides retained task after idle", async () => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "astatus-comp-"));
-  const prev = process.env.AGENT_STATUS_DIR;
-  process.env.AGENT_STATUS_DIR = tmp;
-
-  const { pi, lifecycleHandlers } = createMockPi();
-  try {
-    agentStatusPiExtension(pi);
-    const ctx = testCtx("bridge-over-sticky");
-    await lifecycleHandlers.get("session_start")?.({ reason: "startup" }, ctx);
-    await lifecycleHandlers.get("before_agent_start")?.({ prompt: "Retained prompt task" }, ctx);
-    await lifecycleHandlers.get("agent_end")?.({}, ctx);
-
-    pi.events.emit("agent-status:profile", {
-      task: { state: "input-required", summary: "Bridge still wins" },
-      x_meta: {
-        pi: {
-          mode: "build",
-          ponytail: "full",
-          todo: { open: 1, done: 0 },
-          goal: { active: false, status: "idle", text: "" },
-          subagent: { active: false },
-        },
-      },
-    });
-
-    const record = readStatusFile(tmp);
-    assert.equal(record.task.state, "input-required");
-    assert.equal(record.task.summary, "Bridge still wins");
-  } finally {
-    if (prev === undefined) delete process.env.AGENT_STATUS_DIR;
-    else process.env.AGENT_STATUS_DIR = prev;
-    fs.rmSync(tmp, { recursive: true, force: true });
-  }
-});
-
-test("composite: bridge meta includes full pi snapshot", async () => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "astatus-comp-"));
-  const prev = process.env.AGENT_STATUS_DIR;
-  process.env.AGENT_STATUS_DIR = tmp;
-
-  const { pi, lifecycleHandlers } = createMockPi();
-  try {
-    agentStatusPiExtension(pi);
-    const ctx = testCtx("full-meta");
-    await lifecycleHandlers.get("session_start")?.({ reason: "startup" }, ctx);
-
-    // Bridge with full meta
-    pi.events.emit("agent-status:profile", {
-      x_meta: {
-        pi: {
-          mode: "brainstorm",
-          access: "read-only",
-          profile: "pub",
-          ponytail: "off",
-          todo: { open: 5, done: 12, current: "Write docs" },
-          goal: { active: true, status: "working", text: "Finish docs" },
-          subagent: { active: true, mode: "chain", agents: ["reviewer", "worker"] },
-        },
-      },
-    });
-
-    const record = readStatusFile(tmp);
-    const meta = record.x_meta.pi;
-    assert.equal(meta.mode, "brainstorm");
-    assert.equal(meta.access, "read-only");
-    assert.equal(meta.profile, "pub");
-    assert.equal(meta.ponytail, "off");
-    assert.equal(meta.todo.open, 5);
-    assert.equal(meta.todo.done, 12);
-    assert.equal(meta.goal.active, true);
-    assert.equal(meta.goal.text, "Finish docs");
-    assert.equal(meta.subagent.active, true);
-    assert.equal(meta.subagent.mode, "chain");
-    assert.deepEqual(meta.subagent.agents, ["reviewer", "worker"]);
-  } finally {
-    if (prev === undefined) delete process.env.AGENT_STATUS_DIR;
-    else process.env.AGENT_STATUS_DIR = prev;
-    fs.rmSync(tmp, { recursive: true, force: true });
-  }
-});
-
-test("composite: shutdown removes file even with bridge data", async () => {
+test("composite: shutdown removes file even with goal and bridge data", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "astatus-comp-"));
   const prev = process.env.AGENT_STATUS_DIR;
   process.env.AGENT_STATUS_DIR = tmp;
@@ -493,8 +349,9 @@ test("composite: shutdown removes file even with bridge data", async () => {
     agentStatusPiExtension(pi);
     const ctx = testCtx("shutdown");
     await lifecycleHandlers.get("session_start")?.({ reason: "startup" }, ctx);
+    await lifecycleHandlers.get("before_agent_start")?.({ prompt: "Goal before shutdown" }, ctx);
+    await lifecycleHandlers.get("agent_end")?.({}, ctx);
 
-    // Bridge emits some data
     pi.events.emit("agent-status:profile", {
       task: { state: "submitted", summary: "pending" },
       x_meta: {
@@ -502,67 +359,8 @@ test("composite: shutdown removes file even with bridge data", async () => {
       },
     });
 
-    // Shutdown removes file
     await lifecycleHandlers.get("session_shutdown")?.({ reason: "quit" }, {});
-
     assert.deepEqual(fs.readdirSync(tmp), []);
-  } finally {
-    if (prev === undefined) delete process.env.AGENT_STATUS_DIR;
-    else process.env.AGENT_STATUS_DIR = prev;
-    fs.rmSync(tmp, { recursive: true, force: true });
-  }
-});
-
-test("composite: no bridge data does not set x_meta", async () => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "astatus-comp-"));
-  const prev = process.env.AGENT_STATUS_DIR;
-  process.env.AGENT_STATUS_DIR = tmp;
-
-  const { pi, lifecycleHandlers } = createMockPi();
-  try {
-    agentStatusPiExtension(pi);
-    const ctx = testCtx("no-xmeta");
-    await lifecycleHandlers.get("session_start")?.({ reason: "startup" }, ctx);
-
-    const record = readStatusFile(tmp);
-    // No x_meta without bridge event
-    assert.equal("x_meta" in record, false);
-    // No task yet
-    assert.equal("task" in record, false);
-  } finally {
-    if (prev === undefined) delete process.env.AGENT_STATUS_DIR;
-    else process.env.AGENT_STATUS_DIR = prev;
-    fs.rmSync(tmp, { recursive: true, force: true });
-  }
-});
-
-test("composite: bridge x_meta cleared when bridge emits without x_meta", async () => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "astatus-comp-"));
-  const prev = process.env.AGENT_STATUS_DIR;
-  process.env.AGENT_STATUS_DIR = tmp;
-
-  const { pi, lifecycleHandlers } = createMockPi();
-  try {
-    agentStatusPiExtension(pi);
-    const ctx = testCtx("clear-xmeta");
-    await lifecycleHandlers.get("session_start")?.({ reason: "startup" }, ctx);
-
-    // First: bridge with x_meta
-    pi.events.emit("agent-status:profile", {
-      x_meta: {
-        pi: { mode: "build", ponytail: "full", todo: { open: 0, done: 0 }, goal: { active: false, status: "idle", text: "" }, subagent: { active: false } },
-      },
-    });
-
-    let record = readStatusFile(tmp);
-    assert.ok("x_meta" in record);
-
-    // Second: bridge without x_meta — should not happen in practice,
-    // but the writer should handle it gracefully
-    pi.events.emit("agent-status:profile", {});
-
-    record = readStatusFile(tmp);
-    assert.equal("x_meta" in record, false);
   } finally {
     if (prev === undefined) delete process.env.AGENT_STATUS_DIR;
     else process.env.AGENT_STATUS_DIR = prev;

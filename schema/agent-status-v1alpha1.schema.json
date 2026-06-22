@@ -42,6 +42,24 @@
       },
       "additionalProperties": true
     },
+    "goal": {
+      "type": "object",
+      "required": ["summary", "updated_at", "source"],
+      "properties": {
+        "summary": {
+          "type": "string"
+        },
+        "updated_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "source": {
+          "type": "string",
+          "const": "initial-prompt"
+        }
+      },
+      "additionalProperties": true
+    },
     "task": {
       "type": "object",
       "properties": {

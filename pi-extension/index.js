@@ -65,6 +65,16 @@ export function withTask(record, task) {
   return next;
 }
 
+export function withGoal(record, goal) {
+  const next = structuredClone(record);
+  if (!goal) {
+    delete next.goal;
+    return next;
+  }
+  next.goal = goal;
+  return next;
+}
+
 export function updateRuntime(record, patch = {}, now = nowUtc()) {
   const next = structuredClone(record);
   next.runtime = {
@@ -159,19 +169,21 @@ export default function agentStatusPiExtension(pi) {
   let current = buildBaseRecord({ agentId });
 
   // -- Composable task sources --
-  let coreTask = undefined;   // from before_agent_start prompt summary
-  let stickyTask = undefined; // retained prompt-derived task for idle session state
+  let coreTask = undefined; // active prompt-derived task only
+  let goal = undefined; // first-prompt durable session intent
   let bridgeData = undefined; // from agent-status:profile event
-  let llmSummaryText = undefined; // cached LLM summary, avoid re-summarizing each step
+  let promptSequence = 0;
+  let activeTaskSequence = undefined;
+  let goalSequence = undefined;
+  let sessionSequence = 0;
 
   const flush = () => {
     if (!enabled) return;
     // ponytail: compose final record from sources inline, no extra abstraction
     let record = current;
 
-    // Task priority: bridge > active prompt task > retained idle task
-    const finalTask = bridgeData?.task || coreTask || stickyTask;
-    record = withTask(record, finalTask || undefined);
+    record = withGoal(record, goal);
+    record = withTask(record, bridgeData?.task || coreTask || undefined);
 
     // x_meta: from bridge only
     if (bridgeData?.x_meta) {
@@ -187,9 +199,17 @@ export default function agentStatusPiExtension(pi) {
     current = updateRuntime(current, patch);
     flush();
   };
-  const setCoreTask = (task) => {
+  const setCoreTask = (task, sequence = activeTaskSequence) => {
     if (!enabled) return;
     coreTask = task;
+    activeTaskSequence = task ? sequence : undefined;
+    current = updateRuntime(current, { last_activity_at: nowUtc() });
+    flush();
+  };
+  const setGoal = (nextGoal, sequence = goalSequence) => {
+    if (!enabled) return;
+    goal = nextGoal;
+    goalSequence = nextGoal ? sequence : undefined;
     current = updateRuntime(current, { last_activity_at: nowUtc() });
     flush();
   };
@@ -223,10 +243,13 @@ export default function agentStatusPiExtension(pi) {
     activeSessions.set(sessionKey, ownerId);
     activeSessionKey = sessionKey;
     enabled = true;
+    sessionSequence += 1;
     coreTask = undefined;
-    stickyTask = undefined;
+    goal = undefined;
     bridgeData = undefined;
-    llmSummaryText = undefined;
+    promptSequence = 0;
+    activeTaskSequence = undefined;
+    goalSequence = undefined;
     current = buildBaseRecord({
       agentId,
       workspace: ctx.cwd,
@@ -237,29 +260,46 @@ export default function agentStatusPiExtension(pi) {
   });
 
   pi.on("before_agent_start", async (event, ctx) => {
-    // Set task immediately with cheap fallback for instant user feedback
-    const fallbackSummary = summarizePrompt(event.prompt);
-    const task = {
-      state: "working",
-      summary: llmSummaryText || fallbackSummary,
-      status_timestamp: nowUtc(),
-      // ponytail: use session file as cheap context id until pi exposes stable task ids here.
-      ...(ctx.sessionManager?.getSessionFile?.() ? { context_id: String(ctx.sessionManager.getSessionFile()) } : {}),
-    };
-    stickyTask = structuredClone(task);
-    setCoreTask(task);
+    const prompt = event.prompt;
+    const fallbackSummary = summarizePrompt(prompt);
+    const sequence = ++promptSequence;
+    const currentSessionSequence = sessionSequence;
+    const summarize = ctx.agentStatusSummarize || llmSummarize;
+    const contextId = ctx.sessionManager?.getSessionFile?.() ? String(ctx.sessionManager.getSessionFile()) : undefined;
 
-    // Background: LLM summarization once per session, skip if already done
-    if (!llmSummaryText) {
-      llmSummarize(event.prompt, ctx).then(llmSummary => {
-        if (llmSummary && llmSummary !== fallbackSummary) {
-          llmSummaryText = llmSummary;
-          const nextTask = { ...task, summary: llmSummary, status_timestamp: nowUtc() };
-          stickyTask = structuredClone(nextTask);
-          setCoreTask(nextTask);
-        }
+    const summaryPromise = Promise.resolve(summarize(prompt, ctx)).catch(() => undefined);
+
+    if (!goal) {
+      setGoal({
+        summary: fallbackSummary,
+        updated_at: nowUtc(),
+        source: "initial-prompt",
+      }, sequence);
+
+      summaryPromise.then(llmSummary => {
+        if (!llmSummary || llmSummary === fallbackSummary) return;
+        if (!enabled || sessionSequence !== currentSessionSequence || goalSequence !== sequence) return;
+        setGoal({
+          summary: llmSummary,
+          updated_at: nowUtc(),
+          source: "initial-prompt",
+        }, sequence);
       });
     }
+
+    const task = {
+      state: "working",
+      summary: fallbackSummary,
+      status_timestamp: nowUtc(),
+      ...(contextId ? { context_id: contextId } : {}),
+    };
+    setCoreTask(task, sequence);
+
+    summaryPromise.then(llmSummary => {
+      if (!llmSummary || llmSummary === fallbackSummary) return;
+      if (!enabled || sessionSequence !== currentSessionSequence || activeTaskSequence !== sequence || !coreTask) return;
+      setCoreTask({ ...task, summary: llmSummary, status_timestamp: nowUtc() }, sequence);
+    });
   });
 
   pi.on("tool_execution_start", async () => {
@@ -272,14 +312,7 @@ export default function agentStatusPiExtension(pi) {
 
   pi.on("agent_end", async () => {
     if (!enabled) return;
-    coreTask = undefined;
-    if (stickyTask) {
-      stickyTask = {
-        ...stickyTask,
-        state: "submitted",
-        status_timestamp: nowUtc(),
-      };
-    }
+    setCoreTask(undefined);
     current = updateRuntime(current);
     flush();
   });
@@ -287,6 +320,11 @@ export default function agentStatusPiExtension(pi) {
   pi.on("session_shutdown", async () => {
     if (!enabled) return;
     stopHeartbeat();
+    coreTask = undefined;
+    goal = undefined;
+    bridgeData = undefined;
+    activeTaskSequence = undefined;
+    goalSequence = undefined;
     fs.rmSync(statusPath, { force: true });
     releaseSession();
   });

@@ -15,7 +15,7 @@ The storage choice follows normal host conventions: `${XDG_STATE_HOME:-~/.local/
 
 ## Scope
 
-`agent-status/v1alpha1` defines a local snapshot file for live agent runtime and optional current task state. Its goal is cheap local discovery, inspection, and lightweight tooling.
+`agent-status/v1alpha1` defines a local snapshot file for live agent runtime, optional durable session goal, and optional current task state. Its goal is cheap local discovery, inspection, and lightweight tooling.
 
 This standard covers:
 - file location
@@ -79,11 +79,16 @@ This model supports multiple simultaneous sessions of the same agent family by u
     "pid": 12345,
     "workspace": "/home/julien/src/project"
   },
+  "goal": {
+    "summary": "refactor scheduler tests",
+    "updated_at": "2026-06-20T16:44:50Z",
+    "source": "initial-prompt"
+  },
   "task": {
     "id": "task-123",
     "context_id": "ctx-456",
     "state": "working",
-    "summary": "refactor scheduler tests",
+    "summary": "update flaky scheduler assertions",
     "status_timestamp": "2026-06-20T16:44:55Z"
   },
   "a2a": {
@@ -112,6 +117,7 @@ Optional fields:
 - `runtime.last_activity_at`
 - `runtime.pid`
 - `runtime.workspace`
+- `goal`
 - `task`
 - `a2a`
 - `x_meta`
@@ -124,6 +130,8 @@ Optional fields:
 - `runtime.updated_at`: timestamp of the latest heartbeat or state update
 - `runtime.last_activity_at`: time of the last meaningful work activity, if known
 - `runtime.workspace`: absolute path preferred
+- `goal`: durable session-level intent snapshot, usually seeded from first prompt
+- `task`: current turn or currently queued unit of work
 - `x_meta`: extension object for additive local metadata
 
 ## Runtime lifecycle model
@@ -139,6 +147,21 @@ Semantics:
 - `running`: the agent session is believed to be active
 - `stopped`: the agent stopped cleanly or a final snapshot was persisted after exit
 - `unknown`: the writer cannot determine runtime state confidently
+
+## Goal model
+
+If `goal` exists, it captures durable session intent that may outlive active turns.
+
+Required goal fields:
+- `goal.summary`
+- `goal.updated_at`
+- `goal.source`
+
+Rules:
+- `goal` is session-level purpose, not turn-level progress
+- `goal.source="initial-prompt"` means writer seeded goal from first prompt in session
+- `goal` MAY persist while agent is otherwise idle
+- retained session purpose MUST NOT be encoded by keeping `task.state="submitted"`
 
 ## Task model
 
@@ -156,6 +179,8 @@ If `task` exists, `task.state` uses A2A-style values:
 Rules:
 - `idle` is not a valid `task.state`
 - a reader MAY derive `idle` from `runtime.lifecycle=running` plus a missing `task`
+- `task` represents current turn work or real queued work only
+- retained session purpose belongs in `goal`, not `task.state="submitted"`
 - `task.id` and `task.context_id` align with A2A task concepts when available
 - `task.status_timestamp` records the timestamp of the current task state
 
@@ -167,11 +192,12 @@ Reference writer behavior:
 3. Create the status directory if it does not exist.
 4. Use an absolute workspace path when populating `runtime.workspace`.
 5. Use `agent_id` value unique per running instance. Do not reuse PID as identity.
-6. Update the file on lifecycle changes, task changes, summary changes, and heartbeat intervals.
-7. Send a heartbeat every 15 to 30 seconds.
-8. On clean exit, a writer MAY remove the file or MAY persist a final snapshot with `runtime.lifecycle=stopped`.
-9. Temporary filenames used for atomic writes SHOULD use random or OS-guaranteed uniqueness, not PID suffixes.
-10. Writers SHOULD emit UTC timestamps with a `Z` suffix.
+6. First prompt in session SHOULD seed `goal`; later prompts SHOULD update `task` without replacing `goal`.
+7. Update the file on lifecycle changes, goal changes, task changes, summary changes, and heartbeat intervals.
+8. Send a heartbeat every 15 to 30 seconds.
+9. On clean exit, a writer MAY remove the file or MAY persist a final snapshot with `runtime.lifecycle=stopped`.
+10. Temporary filenames used for atomic writes SHOULD use random or OS-guaranteed uniqueness, not PID suffixes.
+11. Writers SHOULD emit UTC timestamps with a `Z` suffix.
 
 ## Reader rules
 

@@ -16,6 +16,7 @@ import agentStatusPiExtension, {
   sanitizeAgentId,
   summarizePrompt,
   updateRuntime,
+  withGoal,
   withTask,
   writeStatusFile,
 } from "../index.js";
@@ -41,12 +42,19 @@ test("buildBaseRecord creates minimal valid record", () => {
   });
 });
 
-test("task add and clear works", () => {
+test("task and goal add and clear works", () => {
   const base = buildBaseRecord({ agentId: "pi-1", now: "2026-06-20T16:45:00Z" });
-  const withWorkingTask = withTask(base, { state: "working", summary: "test", status_timestamp: "2026-06-20T16:45:01Z" });
+  const withSessionGoal = withGoal(base, { summary: "ship docs", updated_at: "2026-06-20T16:45:01Z", source: "initial-prompt" });
+  assert.equal(withSessionGoal.goal.summary, "ship docs");
+
+  const withWorkingTask = withTask(withSessionGoal, { state: "working", summary: "edit docs", status_timestamp: "2026-06-20T16:45:02Z" });
   assert.equal(withWorkingTask.task.state, "working");
-  const cleared = withTask(withWorkingTask, undefined);
-  assert.equal("task" in cleared, false);
+
+  const clearedTask = withTask(withWorkingTask, undefined);
+  assert.equal("task" in clearedTask, false);
+
+  const clearedGoal = withGoal(clearedTask, undefined);
+  assert.equal("goal" in clearedGoal, false);
 });
 
 test("runtime update bumps fields", () => {
@@ -76,11 +84,16 @@ test("distinct agent ids map to distinct status paths", () => {
 test("writeStatusFile writes parseable json atomically", () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "agent-status-pi-"));
   const filePath = path.join(tmp, "pi-1.json");
-  const record = buildBaseRecord({ agentId: "pi-1", now: nowUtc() });
+  const record = withGoal(buildBaseRecord({ agentId: "pi-1", now: nowUtc() }), {
+    summary: "keep intent",
+    updated_at: nowUtc(),
+    source: "initial-prompt",
+  });
   writeStatusFile(filePath, record);
   writeStatusFile(filePath, updateRuntime(record, { last_activity_at: nowUtc() }));
   const loaded = JSON.parse(fs.readFileSync(filePath, "utf8"));
   assert.equal(loaded.agent_id, "pi-1");
+  assert.equal(loaded.goal.summary, "keep intent");
   assert.equal(typeof loaded.runtime.updated_at, "string");
 });
 
@@ -133,6 +146,8 @@ test("extension session_start writes uuid-based status file", async () => {
     const record = JSON.parse(fs.readFileSync(path.join(tmp, files[0]), "utf8"));
     assert.match(record.agent_id, /^pi-[0-9a-f-]+$/);
     assert.equal(record.runtime.workspace, path.resolve("/work/tree"));
+    assert.equal("goal" in record, false);
+    assert.equal("task" in record, false);
 
     await handlers.get("session_shutdown")?.({ reason: "quit" }, {});
     assert.deepEqual(fs.readdirSync(tmp), []);
@@ -206,7 +221,7 @@ test("extension ignores duplicate session across separate pi wrappers", async ()
   }
 });
 
-test("extension session_start switches session ownership and clears retained task", async () => {
+test("extension session_start switches session ownership and clears goal and task", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "agent-status-ext-"));
   const previous = process.env.AGENT_STATUS_DIR;
   process.env.AGENT_STATUS_DIR = tmp;
@@ -242,13 +257,14 @@ test("extension session_start switches session ownership and clears retained tas
     };
 
     await handlers.get("session_start")?.({ reason: "startup" }, firstCtx);
-    await handlers.get("before_agent_start")?.({ prompt: "Retained from first session" }, firstCtx);
+    await handlers.get("before_agent_start")?.({ prompt: "First session goal" }, firstCtx);
     await handlers.get("agent_end")?.({}, firstCtx);
 
     let files = fs.readdirSync(tmp);
     assert.equal(files.length, 1);
     let record = JSON.parse(fs.readFileSync(path.join(tmp, files[0]), "utf8"));
-    assert.equal(record.task.state, "submitted");
+    assert.equal(record.goal.summary, "First session goal");
+    assert.equal("task" in record, false);
 
     await handlers.get("session_start")?.({ reason: "switch" }, secondCtx);
 
@@ -256,10 +272,46 @@ test("extension session_start switches session ownership and clears retained tas
     assert.equal(files.length, 1);
     record = JSON.parse(fs.readFileSync(path.join(tmp, files[0]), "utf8"));
     assert.equal(record.runtime.workspace, path.resolve("/work/second"));
+    assert.equal("goal" in record, false);
     assert.equal("task" in record, false);
 
     await handlers.get("session_shutdown")?.({ reason: "quit" }, secondCtx);
     assert.deepEqual(fs.readdirSync(tmp), []);
+  } finally {
+    if (previous === undefined) delete process.env.AGENT_STATUS_DIR;
+    else process.env.AGENT_STATUS_DIR = previous;
+  }
+});
+
+test("extension agent_end clears task but keeps goal", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "agent-status-ext-"));
+  const previous = process.env.AGENT_STATUS_DIR;
+  process.env.AGENT_STATUS_DIR = tmp;
+
+  const handlers = new Map();
+  const pi = {
+    on(event, handler) {
+      handlers.set(event, handler);
+    },
+  };
+
+  try {
+    agentStatusPiExtension(pi);
+    const ctx = {
+      cwd: "/work/tree",
+      sessionManager: { getSessionFile: () => "/tmp/session.jsonl" },
+    };
+
+    await handlers.get("session_start")?.({ reason: "startup" }, ctx);
+    await handlers.get("before_agent_start")?.({ prompt: "Persist session intent" }, ctx);
+    await handlers.get("agent_end")?.({}, ctx);
+
+    const files = fs.readdirSync(tmp);
+    const record = JSON.parse(fs.readFileSync(path.join(tmp, files[0]), "utf8"));
+    assert.equal(record.goal.summary, "Persist session intent");
+    assert.equal("task" in record, false);
+
+    await handlers.get("session_shutdown")?.({ reason: "quit" }, ctx);
   } finally {
     if (previous === undefined) delete process.env.AGENT_STATUS_DIR;
     else process.env.AGENT_STATUS_DIR = previous;

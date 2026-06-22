@@ -137,6 +137,17 @@ def build_payload(args: argparse.Namespace) -> dict[str, Any]:
     if args.workspace:
         runtime["workspace"] = str(Path(args.workspace).expanduser().resolve())
 
+    goal_present = any(value is not None for value in [args.goal_summary, args.goal_updated_at, args.goal_source])
+    if goal_present:
+        goal: dict[str, Any] = {}
+        if args.goal_summary is not None:
+            goal["summary"] = args.goal_summary
+        if args.goal_updated_at is not None:
+            goal["updated_at"] = args.goal_updated_at
+        if args.goal_source is not None:
+            goal["source"] = args.goal_source
+        payload["goal"] = goal
+
     task_present = any(
         value is not None
         for value in [args.task_id, args.context_id, args.task_state, args.task_summary, args.task_status_timestamp]
@@ -224,6 +235,20 @@ def validate_payload(payload: Any) -> list[str]:
             errors.append("runtime.pid must be integer")
         if "workspace" in runtime and not isinstance(runtime["workspace"], str):
             errors.append("runtime.workspace must be string")
+
+    goal = payload.get("goal")
+    if goal is not None:
+        if not isinstance(goal, dict):
+            errors.append("goal must be object")
+        else:
+            for key in ["summary", "source"]:
+                if key in goal and not isinstance(goal[key], str):
+                    errors.append(f"goal.{key} must be string")
+            if "updated_at" in goal:
+                try:
+                    parse_timestamp(goal["updated_at"])
+                except ValidationError as exc:
+                    errors.append(f"goal.updated_at: {exc}")
 
     task = payload.get("task")
     if task is not None:
@@ -410,13 +435,16 @@ def print_list(
         rt = rec["runtime"]
         state = derive_state(rec, now=now, stale_after=stale_after)
         age = _human_age(rt["updated_at"], now)
-        task_sum = rec.get("task", {}).get("summary", "─")
+        goal_sum = rec.get("goal", {}).get("summary")
+        task_sum = rec.get("task", {}).get("summary")
+        primary_sum = task_sum or goal_sum or "─"
 
         lc = f"{_ICON_LIFECYCLE.get(rt['lifecycle'], '?')} {rt['lifecycle']}"
         st = f"{_ICON_STATE.get(state, '?')} {state}"
 
-        # sub-line: workspace + pid
         parts = []
+        if goal_sum and goal_sum != primary_sum:
+            parts.append(f"goal {goal_sum}")
         ws = rt.get("workspace")
         if ws:
             parts.append(ws)
@@ -424,9 +452,9 @@ def print_list(
         if pid is not None:
             parts.append(f"pid {pid}")
         if parts:
-            detail = task_sum + "\n  " + "  ·  ".join(parts)
+            detail = primary_sum + "\n  " + "  ·  ".join(parts)
         else:
-            detail = task_sum
+            detail = primary_sum
 
         clr = _STATE_COLOR.get(state, "")
         # rich uses "dim" not "d"
@@ -533,6 +561,9 @@ def build_parser() -> argparse.ArgumentParser:
     emit.add_argument("--pid", type=int)
     emit.add_argument("--updated-at")
     emit.add_argument("--last-activity-at")
+    emit.add_argument("--goal-summary")
+    emit.add_argument("--goal-updated-at")
+    emit.add_argument("--goal-source")
     emit.add_argument("--task-id")
     emit.add_argument("--context-id")
     emit.add_argument("--task-state", choices=sorted(TASK_STATES))

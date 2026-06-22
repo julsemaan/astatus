@@ -57,11 +57,27 @@ The emitter SHOULD populate when available:
 runtime.pid            = <integer, process ID, descriptive only>
 runtime.workspace      = <string, absolute path>
 runtime.last_activity_at = <ISO 8601 UTC, last meaningful work>
+goal                   = <object, durable session intent>
 task                   = <object, current task state>
 x_meta                 = <object, extension-specific metadata>
 ```
 
-### 3.3 Task Object
+### 3.3 Goal Object
+
+If a goal exists:
+
+```
+goal.summary           = <string, concise session intent>
+goal.updated_at        = <ISO 8601 UTC>
+goal.source            = "initial-prompt"
+```
+
+Rules:
+- `goal` captures session-level durable intent.
+- `goal` MAY persist across idle turns.
+- First prompt in session SHOULD seed `goal`.
+
+### 3.4 Task Object
 
 If a task exists:
 
@@ -79,8 +95,9 @@ Rules:
 - `task.state` MUST NOT be `idle`. Idle is a reader-derived state.
 - When no task is active, the `task` key SHOULD be absent (not null, not empty object).
 - A reader derives `idle` from `runtime.lifecycle=running` + missing `task`.
+- Retained session purpose MUST NOT be encoded by keeping `task.state = "submitted"` after `agent_end`.
 
-### 3.4 Schema Version
+### 3.5 Schema Version
 
 `schema_version` MUST be the exact string `"agent-status/v1alpha1"`. This is
 a const, not a semver range. Breaking changes require a new schema version
@@ -189,8 +206,7 @@ the semantics are universal.
   session MUST NOT create duplicate files or overwrite an existing owner's file.
 - `session_shutdown` handlers MUST clean up: stop timers, release session
   ownership, remove the status file.
-- `before_agent_start` handlers MUST set task state to `working` with a
-  summary derived from the prompt.
+- `before_agent_start` handlers MUST seed `task` from prompt summary and SHOULD seed `goal` from first prompt in session.
 - `agent_end` handlers MUST clear the core task (task derived from prompt).
   Bridge-derived tasks MAY survive `agent_end`.
 
@@ -220,7 +236,7 @@ inspect).
 
 | State | Meaning | Reader Interpretation
 |-------|---------|----------------------
-| `submitted` | Work queued, not yet started | Agent has pending work but is not actively processing
+| `submitted` | Work queued, not yet started | Agent has real pending work but is not actively processing
 | `working` | Agent actively processing | LLM is generating, tools are executing, work is in flight
 | `input-required` | Waiting for user input | Agent asked a question, needs confirmation, or is blocked on user action
 | `auth-required` | Waiting for authentication | Agent needs OAuth, API key, credential, or permission grant
@@ -283,8 +299,8 @@ Specifically:
 - When the agent is waiting for user input, `task.state` MUST be
   `input-required`, not `working`.
 - When the agent has finished processing and is idle, the `task` key MUST be
-  absent (derived `idle`), not `completed`. `completed` is a transient state
-  that should be cleared at `agent_end`.
+  absent (derived `idle`), not `completed` and not synthetic `submitted`.
+  `completed` is transient and should be cleared at `agent_end`.
 - When the agent is executing tools (file writes, shell commands, API calls),
   `task.state` MUST be `working`.
 - The emitter MUST NOT hold `completed` or `failed` beyond the current agent
@@ -360,6 +376,7 @@ genuinely waiting — it has not finished its turn.
 | Agent loop is active (generating, calling tools) | `working` — task present |
 | Agent loop finished, no pending tool calls | No task — derived `idle` |
 | Agent loop finished, but bridge says open todos remain | `submitted` — task present |
+| Agent loop finished, no bridge-reported pending work | No task — derived `idle` |
 | Heartbeat ticking, no task, no activity | No task — derived `idle` |
 
 The emitter MUST NOT report `working` when the agent is idle. The most
@@ -373,6 +390,8 @@ clear it at `agent_end`.
 - Agent has open todos (from bridge) but is currently idle.
 - Agent received a follow-up message that is queued for next turn.
 - Agent is waiting for a sub-agent or background task to complete.
+
+Do not use `submitted` to preserve session intent after work finished. That belongs in `goal`.
 
 The emitter SHOULD set `submitted` when:
 - A bridge reports pending work items (open todo count > 0).
@@ -397,14 +416,15 @@ Some states must survive across agent turns within a session:
 |---|---|---|
 | `working` | No | Transient — set per prompt, cleared at `agent_end` |
 | `input-required` | Yes | Agent may be waiting across turns (question blocked) |
-| `submitted` | Yes | Pending todos persist |
+| `submitted` | Yes | Real pending work persists |
 | `completed` | No | Transient — cleared at `agent_end` |
 | `failed` | No | Transient — cleared at `agent_end` |
+| `goal` | Yes | Session intent may outlive active turns |
 
-The reference implementation handles this by separating `coreTask`
-(prompt-derived, cleared at `agent_end`) from `bridgeData` (external,
-persists until replaced). Bridge task state survives `agent_end`; core task
-does not.
+Reference pattern: separate `goal` (first-prompt durable intent), `coreTask`
+(prompt-derived current turn, cleared at `agent_end`), and `bridgeData`
+(external, persists until replaced). Bridge task state may survive `agent_end`;
+core task does not.
 
 ### 8.7 State Transition Rules
 
@@ -453,9 +473,11 @@ heartbeat.
 
 The emitter may receive task state from multiple sources:
 
-1. **Core (prompt-derived)**: Set from the user's prompt text at
+1. **Goal (first-prompt derived)**: Set from first prompt in session.
+   Persists across idle turns until session reset.
+2. **Core (prompt-derived)**: Set from current user's prompt text at
    `before_agent_start`. Cleared at `agent_end`.
-2. **Bridge (external)**: Override from an external data source (profile
+3. **Bridge (external)**: Override from an external data source (profile
    sidecar, status bridge). May persist across agent turns.
 
 ### 10.2 Priority Rules
@@ -465,6 +487,7 @@ When both sources are present:
 - Bridge task OVERRIDES core task (bridge has higher priority).
 - When bridge task is absent, fall back to core task.
 - When both are absent, `task` key is absent (idle state).
+- `goal` is independent of task priority and persists until session reset.
 
 ### 10.3 LLM Summarization (Optional)
 
@@ -474,7 +497,9 @@ If doing so:
 - Use a cheap/fast model for summarization.
 - Fall back to a truncation-based summary immediately; update with LLM result
   asynchronously.
-- Cache the LLM summary per session to avoid re-summarizing each prompt.
+- Use fallback summary immediately; refine asynchronously when available.
+- Guard async updates so older prompt summaries cannot overwrite newer `task.summary`.
+- `goal` refinement SHOULD apply only to first prompt in session.
 - LLM summarization failure MUST NOT block or break the emitter.
 
 ### 10.4 x_meta
@@ -575,7 +600,7 @@ The canonical implementation is `pi-extension/index.js`. Key patterns:
 | Atomic write | UUID temp file → fsync → rename |
 | Session dedup | Global `Map<sessionKey, ownerToken>` via `Symbol.for()` |
 | Double-load guard | `Symbol.for("agent-status.pi-extension.loaded")` on `pi` object |
-| Task composition | `coreTask` (prompt) + `bridgeData` (external) → `flush()` merges |
+| Task composition | `goal` (first prompt) + `coreTask` (current prompt) + `bridgeData` (external) → `flush()` merges |
 | Heartbeat | `setInterval` at 20s, `.unref()`'d, cleared on shutdown |
 | LLM summary | Background `llmSummarize()` with cached result, non-blocking fallback |
 | Idempotent handlers | `enabled` flag gates all writes; `releaseSession()` cleans ownership |
@@ -591,6 +616,7 @@ An emitter is conformant when:
 - [ ] File removed or marked stopped on clean shutdown
 - [ ] Session deduplication across reload/double-load
 - [ ] Task state follows priority rules (bridge > core > absent)
+- [ ] Goal state persists across idle turns but resets on new session
 - [ ] No background resources leaked on factory load
 - [ ] `runtime.workspace` uses absolute path when known
 - [ ] Timestamps are ISO 8601 UTC with `Z` suffix
