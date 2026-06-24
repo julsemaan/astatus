@@ -1,12 +1,71 @@
 name: Publish to PyPI
 
 on:
+  workflow_dispatch:
   push:
-    tags: ["v*"]
+    branches: [main]
+    paths: [pyproject.toml]
 
 jobs:
+  detect-version-change:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    outputs:
+      version_changed: ${{ steps.check.outputs.version_changed }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Detect version change
+        id: check
+        run: |
+          import tomllib, os, sys, subprocess
+
+          def read_version(path):
+              with open(path, "rb") as f:
+                  return tomllib.load(f)["project"]["version"]
+
+          new_version = read_version("pyproject.toml")
+
+          before = os.environ.get("GITHUB_EVENT_BEFORE", "")
+          if not before or before == "0" * 40:
+              print("No previous commit; treating as version change.")
+              print("version_changed=true")
+              sys.exit(0)
+
+          try:
+              run = subprocess.run(
+                  ["git", "show", f"{before}:pyproject.toml"],
+                  capture_output=True, check=True,
+              )
+              import tempfile, pathlib
+              with tempfile.NamedTemporaryFile(suffix=".toml", delete=False) as f:
+                  f.write(run.stdout)
+                  old_version = read_version(f.name)
+                  pathlib.Path(f.name).unlink()
+          except Exception as e:
+              print(f"Could not read previous pyproject.toml ({e}); treating as version change.")
+              print("version_changed=true")
+              sys.exit(0)
+
+          changed = new_version != old_version
+          print(f"old={old_version} new={new_version} changed={changed}")
+          print(f"version_changed={'true' if changed else 'false'}")
+        shell: python
+
   publish:
     runs-on: ubuntu-latest
+    needs: detect-version-change
+    if: >
+      always() && (
+        github.event_name == 'workflow_dispatch' ||
+        (github.event_name == 'push' && needs.detect-version-change.outputs.version_changed == 'true')
+      )
     permissions:
       id-token: write
     steps:
@@ -26,3 +85,5 @@ jobs:
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true
