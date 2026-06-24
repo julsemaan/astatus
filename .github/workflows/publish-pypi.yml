@@ -68,6 +68,9 @@ jobs:
       )
     permissions:
       id-token: write
+    environment:
+      name: pypi
+      url: https://pypi.org/p/astatus
     steps:
       - uses: actions/checkout@v4
 
