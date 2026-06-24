@@ -15,7 +15,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:
@@ -25,17 +25,22 @@ jobs:
         id: check
         run: |
           import tomllib, os, sys, subprocess
+          from pathlib import Path
 
           def read_version(path):
               with open(path, "rb") as f:
                   return tomllib.load(f)["project"]["version"]
 
+          def set_output(name, value):
+              with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+                  f.write(f"{name}={value}\n")
+
           new_version = read_version("pyproject.toml")
 
-          before = os.environ.get("GITHUB_EVENT_BEFORE", "")
+          before = os.environ.get("BEFORE_SHA", "")
           if not before or before == "0" * 40:
               print("No previous commit; treating as version change.")
-              print("version_changed=true")
+              set_output("version_changed", "true")
               sys.exit(0)
 
           try:
@@ -43,19 +48,17 @@ jobs:
                   ["git", "show", f"{before}:pyproject.toml"],
                   capture_output=True, check=True,
               )
-              import tempfile, pathlib
-              with tempfile.NamedTemporaryFile(suffix=".toml", delete=False) as f:
-                  f.write(run.stdout)
-                  old_version = read_version(f.name)
-                  pathlib.Path(f.name).unlink()
+              old_version = tomllib.loads(run.stdout.decode())["project"]["version"]
           except Exception as e:
               print(f"Could not read previous pyproject.toml ({e}); treating as version change.")
-              print("version_changed=true")
+              set_output("version_changed", "true")
               sys.exit(0)
 
           changed = new_version != old_version
           print(f"old={old_version} new={new_version} changed={changed}")
-          print(f"version_changed={'true' if changed else 'false'}")
+          set_output("version_changed", str(changed).lower())
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
         shell: python
 
   publish:
