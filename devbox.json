@@ -2,7 +2,7 @@
   "$schema": "https://www.jetify.com/devbox.schema.json",
   "packages": ["python@3.10"],
   "env": {
-    "VENV_DIR": ".venv"
+    "VENV_DIR": ".venv-devbox"
   },
   "shell": {
     "init_hook": [
