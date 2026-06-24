@@ -385,7 +385,7 @@ class AgentStatusTests(unittest.TestCase):
 
     def test_print_list_aligns_columns_without_tabs(self):
         try:
-            import rich  # noqa: F401
+            import rich
         except ImportError:
             self.skipTest("rich not installed")
         record = {
@@ -398,6 +398,8 @@ class AgentStatusTests(unittest.TestCase):
                 "workspace": "/tmp/project",
                 "pid": 123,
             },
+            "goal": {"summary": "durable session intent", "updated_at": "2000-06-20T16:44:00Z", "source": "initial-prompt"},
+            "task": {"state": "working", "summary": "current task line"},
         }
         buffer = io.StringIO()
         with contextlib.redirect_stdout(buffer):
@@ -405,18 +407,14 @@ class AgentStatusTests(unittest.TestCase):
 
         output = buffer.getvalue()
         self.assertNotIn("\t", output)
-
-        lines = output.splitlines()
-        # agent row should have the stale state
-        agent_lines = [l for l in lines if "stale" in l and "─" not in l[:4]]
-        self.assertEqual(len(agent_lines), 1, f"expected one agent row, got {lines}")
-        agent_row = agent_lines[0]
-        # sub-row should contain workspace, not in agent row
-        sub_lines = [l for l in lines if "/tmp/project" in l]
-        self.assertEqual(len(sub_lines), 1, f"expected one sub-row with workspace, got {lines}")
-        self.assertNotIn("/tmp/project", agent_row)
-        # sub-row should contain pid
-        self.assertIn("pid 123", sub_lines[0])
+        self.assertNotIn("pid 123", output)
+        self.assertIn("◎", output)
+        self.assertIn("▸", output)
+        goal_pos = output.index("◎")
+        ws_pos = output.index("/tmp/project")
+        task_pos = output.index("▸")
+        self.assertLess(goal_pos, ws_pos)
+        self.assertLess(ws_pos, task_pos)
 
     def test_cli_emit_incomplete_goal_fails(self):
         with tempfile.TemporaryDirectory() as tmp:

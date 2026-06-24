@@ -432,12 +432,12 @@ def print_list(
         title_style="bold white" if color else "",
         border_style="cyan dim" if color else "",
     )
+    table.add_column("TASK")
     table.add_column("AGENT ID", no_wrap=True)
     table.add_column("NAME")
     table.add_column("LIFECYCLE")
     table.add_column("STATE")
     table.add_column("UPDATED", no_wrap=True)
-    table.add_column("TASK")
 
     for rec in sorted(records, key=lambda rec: display_sort_key(rec, now=now, stale_after=stale_after)):
         rt = rec["runtime"]
@@ -445,36 +445,29 @@ def print_list(
         age = _human_age(rt["updated_at"], now)
         goal_sum = rec.get("goal", {}).get("summary")
         task_sum = rec.get("task", {}).get("summary")
-        primary_sum = task_sum or goal_sum or "─"
+        lines = [("◎  " + goal_sum) if goal_sum else "─"]
+        if task_sum:
+            lines.append("▸  " + task_sum)
+        ws = rt.get("workspace")
+        if ws:
+            lines.append(ws)
+
+        detail = lines[0] + "\n  " + "\n  ".join(lines[1:]) if len(lines) > 1 else lines[0]
 
         lc = f"{_ICON_LIFECYCLE.get(rt['lifecycle'], '?')} {rt['lifecycle']}"
         st = f"{_ICON_STATE.get(state, '?')} {state}"
-
-        parts = []
-        if goal_sum and goal_sum != primary_sum:
-            parts.append(f"goal {goal_sum}")
-        ws = rt.get("workspace")
-        if ws:
-            parts.append(ws)
-        pid = rt.get("pid")
-        if pid is not None:
-            parts.append(f"pid {pid}")
-        if parts:
-            detail = primary_sum + "\n  " + "  ·  ".join(parts)
-        else:
-            detail = primary_sum
 
         clr = _STATE_COLOR.get(state, "")
         # rich uses "dim" not "d"
         rich_style = "dim" if clr == "d" else clr
 
         table.add_row(
+            detail,
             rec["agent_id"],
             rec["agent_name"],
             lc,
             st,
             age,
-            detail,
             style=rich_style or None,
         )
 
