@@ -448,7 +448,7 @@ def print_list(
         lines = [("◎  " + goal_sum) if goal_sum else "─"]
         ws = rt.get("workspace")
         if ws:
-            lines.append(ws)
+            lines.append("📁  " + ws)
         if task_sum:
             lines.append("▸  " + task_sum)
 
