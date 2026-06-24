@@ -4,3 +4,4 @@
 - Tooling improvements (ex: the Makefile today is very basic)
 - When resuming a session, it should summarize the task using the initial prompt, not the most recent one
 - In the AGENT STATUS header on a watch, it should say the hostname
+- Agent status table stopped taking all the width of the terminal
