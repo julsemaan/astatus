@@ -134,7 +134,7 @@ async function llmSummarize(prompt, ctx) {
       {
         messages: [{
           role: "user",
-          content: [{ type: "text", text: `Summarize this task very concisely in a few words:\n\n${prompt}` }],
+          content: [{ type: "text", text: `One-line summary of the user's request:\n\n${prompt}` }],
           timestamp: Date.now(),
         }],
       },
@@ -250,6 +250,16 @@ export default function agentStatusPiExtension(pi) {
     promptSequence = 0;
     activeTaskSequence = undefined;
     goalSequence = undefined;
+
+    // ponytail: restore goal from session entries (on resume/fork/startup with existing session)
+    // no-op on fresh sessions (getEntries returns [])
+    const entries = ctx.sessionManager?.getEntries?.() || [];
+    for (const entry of entries) {
+      if (entry.type === "custom" && entry.customType === "agent-status.goal" && entry.data) {
+        goal = entry.data;
+      }
+    }
+
     current = buildBaseRecord({
       agentId,
       workspace: ctx.cwd,
@@ -270,20 +280,24 @@ export default function agentStatusPiExtension(pi) {
     const summaryPromise = Promise.resolve(summarize(prompt, ctx)).catch(() => undefined);
 
     if (!goal) {
-      setGoal({
+      const baseGoal = {
         summary: fallbackSummary,
         updated_at: nowUtc(),
         source: "initial-prompt",
-      }, sequence);
+      };
+      setGoal(baseGoal, sequence);
+      try { pi.appendEntry?.("agent-status.goal", baseGoal); } catch {}
 
       summaryPromise.then(llmSummary => {
         if (!llmSummary || llmSummary === fallbackSummary) return;
         if (!enabled || sessionSequence !== currentSessionSequence || goalSequence !== sequence) return;
-        setGoal({
+        const refinedGoal = {
           summary: llmSummary,
           updated_at: nowUtc(),
           source: "initial-prompt",
-        }, sequence);
+        };
+        setGoal(refinedGoal, sequence);
+        try { pi.appendEntry?.("agent-status.goal", refinedGoal); } catch {}
       });
     }
 

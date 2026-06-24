@@ -367,3 +367,52 @@ test("composite: shutdown removes file even with goal and bridge data", async ()
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+test("composite: resume restores goal from custom entries", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "astatus-comp-"));
+  const prev = process.env.AGENT_STATUS_DIR;
+  process.env.AGENT_STATUS_DIR = tmp;
+
+  const customEntries = [];
+  const { pi, lifecycleHandlers } = createMockPi();
+  pi.appendEntry = (customType, data) => {
+    customEntries.push({ type: "custom", customType, data });
+  };
+
+  try {
+    agentStatusPiExtension(pi);
+    const ctx = {
+      ...testCtx("resume-goal"),
+      sessionManager: {
+        getSessionFile: () => "/tmp/resume-goal.jsonl",
+        getEntries: () => customEntries,
+      },
+    };
+
+    // First session: start, set goal via prompt
+    await lifecycleHandlers.get("session_start")?.({ reason: "startup" }, ctx);
+    await lifecycleHandlers.get("before_agent_start")?.({ prompt: "Refactor auth module" }, ctx);
+
+    let record = readStatusFile(tmp);
+    assert.equal(record.goal.summary, "Refactor auth module");
+    assert.equal(record.goal.source, "initial-prompt");
+    assert.equal(customEntries.length, 1);
+    assert.equal(customEntries[0].customType, "agent-status.goal");
+
+    // Shutdown (simulates quit, status file deleted)
+    await lifecycleHandlers.get("session_shutdown")?.({ reason: "quit" }, ctx);
+    assert.deepEqual(fs.readdirSync(tmp), []);
+
+    // Resume: should restore goal from custom entries
+    await lifecycleHandlers.get("session_start")?.({ reason: "resume", previousSessionFile: "/tmp/resume-goal.jsonl" }, ctx);
+
+    record = readStatusFile(tmp);
+    assert.equal(record.goal.summary, "Refactor auth module");
+    assert.equal(record.goal.source, "initial-prompt");
+    assert.equal("task" in record, false);
+  } finally {
+    if (prev === undefined) delete process.env.AGENT_STATUS_DIR;
+    else process.env.AGENT_STATUS_DIR = prev;
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
