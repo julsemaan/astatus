@@ -184,7 +184,7 @@ the semantics are universal.
 
 | Abstract Event | When It Fires | Emitter Action |
 |---|---|---|
-| `session_start` | Session begins (startup, new, resume, fork) | Generate `agent_id`, create initial snapshot with `lifecycle=running`, start heartbeat |
+| `session_start` | Session begins (startup, new, resume, fork) | Ensure stable unique `agent_id` exists for this extension instance, create initial snapshot with `lifecycle=running`, start heartbeat |
 | `before_agent_start` | User prompt submitted, before agent loop | Set task from prompt summary (cheap fallback) |
 | `agent_end` | Agent loop finished for current prompt | Clear core task, update `updated_at` |
 | `session_shutdown` | Session ending (quit, reload, new, fork) | Stop heartbeat, remove snapshot file OR persist `lifecycle=stopped` |
@@ -240,11 +240,14 @@ inspect).
 | `working` | Agent actively processing | LLM is generating, tools are executing, work is in flight
 | `input-required` | Waiting for user input | Agent asked a question, needs confirmation, or is blocked on user action
 | `auth-required` | Waiting for authentication | Agent needs OAuth, API key, credential, or permission grant
-| `completed` | Task finished successfully | Agent finished the requested work without error
+| `completed` | Task finished successfully | Agent finished requested work without error
 | `canceled` | Task was canceled | User or system canceled before completion
-| `rejected` | Task was rejected | Agent or system refused the task (e.g., safety gate)
-| `failed` | Task failed with error | Agent encountered an unrecoverable error
+| `rejected` | Task was rejected | Agent or system refused task (e.g. safety gate)
+| `failed` | Task failed with error | Agent encountered unrecoverable error
 | `unknown` | Cannot determine task state | State is unclear or in transition
+
+Framework note: schema allows full enum above. Each host integration only emits subset it can verify reliably.
+Reference pi extension in this repo currently verifies `working` directly, `submitted` and `input-required` via optional bridge data, derives idle by omitting `task`, and removes snapshot on shutdown. Direct in-tree support for `tool_call`, `completed`, `failed`, and `auth-required` is not present.
 
 ### 7.3 Derived States (Read-Side Only)
 
@@ -319,10 +322,9 @@ author MUST map their target harness's events to these abstract states.
 | `running` | Session begins | `session_start` | Session init | Session init
 | `working` | Prompt submitted, agent loop starting | `before_agent_start` | User message received | User message received
 | `working` | Tool executing | `tool_execution_start` | Tool call begin | Tool call begin
-| `input-required` | Question/confirm tool called | `tool_call` where tool is question-type | Permission prompt shown | Permission prompt shown
-| `auth-required` | Auth/OAuth flow triggered | `tool_call` where tool requires auth | OAuth redirect | OAuth redirect
-| `completed` | Agent loop finished successfully | `agent_end` (no error) | Response complete | Response complete
-| `failed` | Agent loop error | `agent_end` (with error) | Error response | Error response
+| `input-required` | Waiting for user input | optional bridge event such as `agent-status:profile` | Permission prompt shown | Permission prompt shown
+| `auth-required` | Auth/OAuth flow triggered | host-specific integration needed | OAuth redirect | OAuth redirect
+| `submitted` | Real pending work while idle | optional bridge event such as `agent-status:profile` | Queued task signal | Queued task signal
 | (no task) | Agent idle, turn ended | `agent_end` | Idle state | Idle state
 | `stopped` | Session shutting down | `session_shutdown` | Session teardown | Session teardown
 
@@ -344,9 +346,7 @@ reporting `working` when the agent is actually blocked on user input.
 
 | Harness Type | Strategy |
 |---|---|
-| **Extension-based** (pi) | Intercept `tool_call` event; check if tool name matches
-a question/confirm/permission pattern. Return `{ block: true }` or observe
-the tool call without blocking to detect the pause. |
+| **Extension-based** (pi) | Prefer host-supported state signal or bridge event over tool-name heuristics. Current in-repo pi extension uses bridge data instead of direct `tool_call` interception. |
 | **Event-emitting** (Codex) | Listen for permission prompt or user approval events.
 These are explicit signals the agent is waiting. |
 | **Log-parsing** | Watch for output patterns indicating a prompt: `?`, `(y/n)`,
@@ -363,11 +363,11 @@ resumes, the emitter SHOULD transition back to `working`.
 
 **Reference implementation pattern (pi):**
 
-The pi extension uses a bridge event (`agent-status:profile`) emitted by a
-profile-side component that has direct access to the host's question state.
-The bridge sets `task.state = "input-required"` with a summary like
-`"Waiting for user input"`. This survives `agent_end` because the agent is
-genuinely waiting — it has not finished its turn.
+The pi extension uses optional bridge event `agent-status:profile` from
+profile-side integration code outside this repo. That bridge can set
+`task.state = "input-required"` with summary like `"Waiting for user input"`.
+This survives `agent_end` because agent is genuinely waiting — it has not
+finished turn.
 
 ### 8.3 Detecting `working` vs `idle`
 
@@ -395,7 +395,7 @@ Do not use `submitted` to preserve session intent after work finished. That belo
 
 The emitter SHOULD set `submitted` when:
 - A bridge reports pending work items (open todo count > 0).
-- The host queues a message with `deliverAs: "nextTurn"`.
+- Host exposes real queued-work signal.
 
 ### 8.5 Detecting `auth-required`
 
@@ -423,8 +423,8 @@ Some states must survive across agent turns within a session:
 
 Reference pattern: separate `goal` (first-prompt durable intent), `coreTask`
 (prompt-derived current turn, cleared at `agent_end`), and `bridgeData`
-(external, persists until replaced). Bridge task state may survive `agent_end`;
-core task does not.
+(external integration data, persists until replaced). Bridge task state may
+survive `agent_end`; core task does not.
 
 ### 8.7 State Transition Rules
 

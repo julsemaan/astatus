@@ -21,3 +21,5 @@ Do not install `./pi-extension` path itself. That directory is dev-local test ha
 After install in running pi session, run `/reload` or restart pi.
 
 Pi loads `./pi-extension/index.js` via root `package.json` `pi.extensions` manifest.
+
+Current extension supports durable `goal` persistence plus optional bridge override via `agent-status:profile`. Bridge producer not shipped in this repo.

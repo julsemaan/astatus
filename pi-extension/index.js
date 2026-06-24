@@ -330,7 +330,7 @@ export default function agentStatusPiExtension(pi) {
   });
 
   // -- Bridge composition event --
-  // profile-side bridge (agent-status-bridge.ts) emits this with structured
+  // external profile-side bridge may emit this with structured
   // task priority (input-required > working > submitted) and x_meta.pi.
   if (pi.events) {
     pi.events.on("agent-status:profile", (data) => {

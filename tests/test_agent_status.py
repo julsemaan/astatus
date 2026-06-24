@@ -84,6 +84,32 @@ class AgentStatusTests(unittest.TestCase):
         errors = agent_status.validate_payload(payload)
         self.assertTrue(any("goal.updated_at" in error for error in errors))
 
+    def test_partial_goal_rejected(self):
+        payload = {
+            "schema_version": agent_status.SCHEMA_VERSION,
+            "agent_id": "pi-1",
+            "agent_name": "pi",
+            "runtime": {"lifecycle": "running", "updated_at": "2026-06-20T16:45:00Z"},
+            "goal": {"summary": "intent"},
+        }
+        errors = agent_status.validate_payload(payload)
+        self.assertTrue(any("goal.updated_at" in error for error in errors))
+        self.assertTrue(any("goal.source" in error for error in errors))
+
+    def test_full_goal_accepted(self):
+        payload = {
+            "schema_version": agent_status.SCHEMA_VERSION,
+            "agent_id": "pi-1",
+            "agent_name": "pi",
+            "runtime": {"lifecycle": "running", "updated_at": "2026-06-20T16:45:00Z"},
+            "goal": {
+                "summary": "intent",
+                "updated_at": "2026-06-20T16:44:50Z",
+                "source": "initial-prompt",
+            },
+        }
+        self.assertEqual(agent_status.validate_payload(payload), [])
+
     def test_invalid_task_state_fails(self):
         payload = {
             "schema_version": agent_status.SCHEMA_VERSION,
@@ -328,6 +354,30 @@ class AgentStatusTests(unittest.TestCase):
         self.assertNotIn("/tmp/project", agent_row)
         # sub-row should contain pid
         self.assertIn("pid 123", sub_lines[0])
+
+    def test_cli_emit_incomplete_goal_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            status_dir = Path(tmp)
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                exit_code = agent_status.main([
+                    "emit",
+                    "--status-dir",
+                    str(status_dir),
+                    "--agent-id",
+                    "pi-1",
+                    "--agent-name",
+                    "pi",
+                    "--lifecycle",
+                    "running",
+                    "--goal-summary",
+                    "ship feature",
+                ])
+            self.assertEqual(exit_code, 1)
+            self.assertIn("goal.updated_at", stderr.getvalue())
+            self.assertIn("goal.source", stderr.getvalue())
+            self.assertFalse((status_dir / "pi-1.json").exists())
 
     def test_cli_get_validate_and_prune(self):
         with tempfile.TemporaryDirectory() as tmp:

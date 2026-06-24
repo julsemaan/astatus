@@ -211,7 +211,7 @@ Reference reader behavior:
 7. If `runtime.lifecycle=running` and there is no `task`, derive `idle`.
 8. Unknown future fields MUST be ignored by read-only tools.
 9. Tools that rewrite existing payloads SHOULD preserve unknown fields.
-10. Unknown task states from future versions SHOULD render as `unknown` instead of crashing.
+10. Reference readers that validate `task.state` against this enum MUST ignore invalid records with a warning instead of crashing.
 11. Readers MUST support both shutdown patterns: removed file and persisted `stopped` snapshot.
 12. Readers SHOULD NOT silently delete stale snapshots during normal reads. Retention cleanup is a separate policy.
 

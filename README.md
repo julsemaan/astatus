@@ -1,6 +1,6 @@
 # agent-status
 
-`agent-status` is a generic local agent status standard with a tiny, stdlib-only reference CLI. It provides a low-cost way to see which agents are running on a machine, what they are doing, and whether their latest status is still fresh.
+`agent-status` is a generic local agent status standard with a small reference CLI. Core file format and validation logic stay lean. Display commands `list` and `watch` require `rich`; non-display commands like `emit`, `get`, `validate`, and `prune` work without it.
 
 ## Why a local status layer exists
 

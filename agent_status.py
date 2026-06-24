@@ -241,14 +241,17 @@ def validate_payload(payload: Any) -> list[str]:
         if not isinstance(goal, dict):
             errors.append("goal must be object")
         else:
-            for key in ["summary", "source"]:
-                if key in goal and not isinstance(goal[key], str):
-                    errors.append(f"goal.{key} must be string")
-            if "updated_at" in goal:
+            require_string(goal, "summary", "goal.summary")
+            updated_at = require_string(goal, "updated_at", "goal.updated_at")
+            source = require_string(goal, "source", "goal.source")
+            if updated_at:
                 try:
-                    parse_timestamp(goal["updated_at"])
+                    parse_timestamp(updated_at)
                 except ValidationError as exc:
                     errors.append(f"goal.updated_at: {exc}")
+            if source is not None:
+                if source != "initial-prompt":
+                    errors.append(f"invalid goal.source: {source}")
 
     task = payload.get("task")
     if task is not None:
@@ -563,7 +566,7 @@ def build_parser() -> argparse.ArgumentParser:
     emit.add_argument("--last-activity-at")
     emit.add_argument("--goal-summary")
     emit.add_argument("--goal-updated-at")
-    emit.add_argument("--goal-source")
+    emit.add_argument("--goal-source", choices=["initial-prompt"])
     emit.add_argument("--task-id")
     emit.add_argument("--context-id")
     emit.add_argument("--task-state", choices=sorted(TASK_STATES))
