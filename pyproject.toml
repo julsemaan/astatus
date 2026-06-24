@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 py-modules = ["agent_status"]
 
 [project]
-name = "agent-status"
+name = "astatus"
 version = "0.1.4"
 description = "Local agent status reference implementation"
 readme = "README.md"

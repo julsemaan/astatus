@@ -70,7 +70,7 @@ jobs:
       id-token: write
     environment:
       name: pypi
-      url: https://pypi.org/p/astatus
+      url: https://pypi.org/p/agent-status
     steps:
       - uses: actions/checkout@v4
 
