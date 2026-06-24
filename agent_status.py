@@ -425,10 +425,10 @@ def print_list(
     console = Console(no_color=not color, highlight=False)
 
     count_s = f"{len(records)} agent{'s' if len(records) != 1 else ''}"
-    subtitle = f"{socket.gethostname()}  ·  {count_s}  ·  0s ago" if live else count_s
+    subtitle = f"{socket.gethostname()}  ·  {count_s}"
 
     table = Table(
-        title=f"AGENT STATUS — {subtitle}",
+        title=subtitle,
         box=box.ROUNDED if color else box.ASCII,
         title_style="bold white" if color else "",
         border_style="cyan dim" if color else "",
