@@ -428,11 +428,11 @@ def print_list(
     table = Table(
         title=f"AGENT STATUS — {subtitle}",
         box=box.ROUNDED if color else box.ASCII,
-        expand=True,
         title_style="bold white" if color else "",
         border_style="cyan dim" if color else "",
     )
-    table.add_column("TASK")
+    # ponytail: min_width prevents Rich from squeezing TASK col in narrow terminals
+    table.add_column("TASK", min_width=27)
     table.add_column("AGENT ID", no_wrap=True)
     table.add_column("NAME")
     table.add_column("LIFECYCLE")
@@ -446,11 +446,11 @@ def print_list(
         goal_sum = rec.get("goal", {}).get("summary")
         task_sum = rec.get("task", {}).get("summary")
         lines = [("◎  " + goal_sum) if goal_sum else "─"]
-        if task_sum:
-            lines.append("▸  " + task_sum)
         ws = rt.get("workspace")
         if ws:
             lines.append(ws)
+        if task_sum:
+            lines.append("▸  " + task_sum)
 
         detail = lines[0] + "\n  " + "\n  ".join(lines[1:]) if len(lines) > 1 else lines[0]
 
