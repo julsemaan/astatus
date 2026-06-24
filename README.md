@@ -27,6 +27,12 @@ See:
 
 Python 3.10+.
 
+From PyPI:
+
+```bash
+pip install agent-status
+```
+
 Manual setup:
 
 ```bash
@@ -83,7 +89,7 @@ Install from built wheel in a fresh environment:
 ```bash
 python -m venv /tmp/astatus-smoke
 . /tmp/astatus-smoke/bin/activate
-pip install dist/agent_status-0.1.0-py3-none-any.whl
+pip install dist/*.whl
 agent-status --help
 ```
 

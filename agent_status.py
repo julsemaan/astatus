@@ -345,11 +345,16 @@ def display_sort_key(
     record: dict[str, Any],
     now: dt.datetime | None = None,
     stale_after: int = DEFAULT_STALE_AFTER,
-) -> tuple[int, float]:
+) -> tuple[int, float, str]:
     state = derive_state(record, now=now, stale_after=stale_after)
     bucket = 1 if state in {"idle", "stale", "stopped", "unknown", "canceled"} else 0
-    updated_at = parse_timestamp(record["runtime"]["updated_at"])
-    return (bucket, -updated_at.timestamp())
+    runtime = record["runtime"]
+    if bucket == 1 and runtime.get("last_activity_at"):
+        sort_ts = parse_timestamp(runtime["last_activity_at"])
+    else:
+        sort_ts = parse_timestamp(runtime["updated_at"])
+    # ponytail: agent_id tie-break avoids sort jitter between idle agents with equal timestamps
+    return (bucket, -sort_ts.timestamp(), record["agent_id"])
 
 
 def load_status_dir(status_dir: Path, warnings: list[str] | None = None) -> list[dict[str, Any]]:

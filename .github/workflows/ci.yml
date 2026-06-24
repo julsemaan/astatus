@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Assert versions match
+        run: |
+          py_ver=$(python3 -c "import re; print(re.search(r'version\s*=\s*\"(.+?)\"', open('pyproject.toml').read()).group(1))")
+          js_ver=$(python3 -c "import json; print(json.load(open('package.json'))['version'])")
+          if [ "$py_ver" != "$js_ver" ]; then
+            echo "::error::Version drift: pyproject.toml=$py_ver package.json=$js_ver"
+            exit 1
+          fi
+          echo "Versions match: $py_ver"
+
+      - name: Run tests
+        run: python -m unittest
+
+      - name: Build package
+        run: |
+          python -m pip install build twine
+          python -m build
+
+      - name: Check package
+        run: twine check dist/*

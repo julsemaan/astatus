@@ -226,6 +226,69 @@ class AgentStatusTests(unittest.TestCase):
             ["working-newer", "working-older", "stopped", "idle-newer", "stale"],
         )
 
+    def test_idle_sort_uses_last_activity_at(self):
+        """Idle agents sort by last_activity_at, not heartbeat updated_at."""
+        now = agent_status.parse_timestamp("2026-06-20T16:50:00Z")
+        stale_after = 600
+
+        def idle_record(agent_id, updated_at, last_activity_at):
+            return {
+                "schema_version": agent_status.SCHEMA_VERSION,
+                "agent_id": agent_id,
+                "agent_name": "pi",
+                "runtime": {
+                    "lifecycle": "running",
+                    "updated_at": updated_at,
+                    "last_activity_at": last_activity_at,
+                },
+            }
+
+        # Agent A: recent heartbeat but old activity
+        # Agent B: older heartbeat but recent activity
+        records = [
+            idle_record("agent-a", "2026-06-20T16:49:50Z", "2026-06-20T16:40:00Z"),
+            idle_record("agent-b", "2026-06-20T16:49:00Z", "2026-06-20T16:48:00Z"),
+        ]
+
+        ordered = sorted(
+            records,
+            key=lambda rec: agent_status.display_sort_key(rec, now=now, stale_after=stale_after),
+        )
+        # Agent B had more recent activity, should appear first despite older heartbeat
+        self.assertEqual([r["agent_id"] for r in ordered], ["agent-b", "agent-a"])
+
+    def test_idle_sort_stable_tie_break_by_agent_id(self):
+        """Idle agents with equal timestamps sort stably by agent_id."""
+        now = agent_status.parse_timestamp("2026-06-20T16:50:00Z")
+        stale_after = 600
+
+        def idle_record(agent_id, updated_at, last_activity_at):
+            return {
+                "schema_version": agent_status.SCHEMA_VERSION,
+                "agent_id": agent_id,
+                "agent_name": "pi",
+                "runtime": {
+                    "lifecycle": "running",
+                    "updated_at": updated_at,
+                    "last_activity_at": last_activity_at,
+                },
+            }
+
+        records = [
+            idle_record("zz-agent", "2026-06-20T16:49:00Z", "2026-06-20T16:48:00Z"),
+            idle_record("aa-agent", "2026-06-20T16:49:00Z", "2026-06-20T16:48:00Z"),
+            idle_record("mm-agent", "2026-06-20T16:49:00Z", "2026-06-20T16:48:00Z"),
+        ]
+
+        ordered = sorted(
+            records,
+            key=lambda rec: agent_status.display_sort_key(rec, now=now, stale_after=stale_after),
+        )
+        self.assertEqual(
+            [r["agent_id"] for r in ordered],
+            ["aa-agent", "mm-agent", "zz-agent"],
+        )
+
     def test_invalid_json_file_ignored_with_warning(self):
         with tempfile.TemporaryDirectory() as tmp:
             good = Path(tmp) / "good.json"
